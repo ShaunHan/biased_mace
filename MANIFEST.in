@@ -1,1 +1,1 @@
-include mace/py.typed
+include biased_mace/py.typed
