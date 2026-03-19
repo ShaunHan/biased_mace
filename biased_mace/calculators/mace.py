@@ -506,7 +506,6 @@ class MACECalculator(Calculator):
         :param system_changes: [str], system changes since last calculation, used by ASE internally
         :return:
         """
-        # call to base-class to set atoms attribute
         Calculator.calculate(self, atoms)
 
         batch_base = self._atoms_to_batch(atoms)
@@ -516,32 +515,94 @@ class MACECalculator(Calculator):
         else:
             compute_stress = False
 
-        ret_tensors = None
-        node_e0 = None
-        # copy from output of model() call to ret_tensors
-        for i, model in enumerate(self.models):
-            batch = self._clone_batch(batch_base)
+        # Biased single-model
+        if self.bias_weight > 0.0:
+            batch = self._clone_batch(batch_base, positions_requires_grad=True)
+            model = self.models[0]
             model_dtype = next(model.parameters()).dtype
             for key in batch.keys:
                 value = batch[key]
                 if torch.is_tensor(value) and torch.is_floating_point(value):
                     batch[key] = value.to(dtype=model_dtype)
+
             out = model(
                 batch.to_dict(),
-                compute_stress=compute_stress,
+                compute_force=False,
+                compute_stress=False,
+                compute_displacement=False,
+                compute_hessian=False,
+                compute_edge_forces=False,
+                compute_atomic_stresses=False,
+                global_descriptor_mask=self._make_global_mask(len(atoms)),
                 training=self.use_compile,
-                compute_edge_forces=self.compute_atomic_stresses,
-                compute_atomic_stresses=self.compute_atomic_stresses,
             )
-            if i == 0:
-                ret_tensors, node_e0 = self._create_result_tensors(
-                    self.num_models, len(atoms), batch, out
-                )
+
+            current_descriptor = out["global_descriptor"]
+            target_descriptor = self.target_global_descriptor.to(
+                device=current_descriptor.device, dtype=current_descriptor.dtype
+            )
+
+            bias_energy = self.bias_weight * torch.sum(
+                (current_descriptor - target_descriptor) ** 2, dim=-1
+            )
+            total_energy = out["energy"] + bias_energy
+
+            forces, virials, stress, hessian, edge_forces = get_outputs(
+                energy=total_energy,
+                positions=batch["positions"],
+                displacement=batch["displacement"],
+                vectors=batch["vectors"],
+                cell=batch["cell"],
+                training=self.use_compile,
+                compute_force=True,
+                compute_virials=compute_stress,
+                compute_stress=compute_stress,
+                compute_hessian=False,
+                compute_edge_forces=self.compute_atomic_stresses,
+            )
+
+            out["energy"] = total_energy
+            out["forces"] = forces
+            out["virials"] = virials
+            out["stress"] = stress
+            out["hessian"] = hessian
+            out["edge_forces"] = edge_forces
+            out["bias_energy"] = bias_energy
+            out["global_descriptor"] = current_descriptor
+
+            ret_tensors, node_e0 = self._create_result_tensors(
+                1, len(atoms), batch, out
+            )
             for key, val in ret_tensors.items():
                 if out.get(key) is not None:
-                    val[i] = out[key].detach()
+                    val[0] = out[key].detach()
 
-        # covert from ret_tensors to calculator results dict
+        # Unbiased committee model
+        else:
+            ret_tensors = None
+            node_e0 = None
+            for i, model in enumerate(self.models):
+                batch = self._clone_batch(batch_base)
+                model_dtype = next(model.parameters()).dtype
+                for key in batch.keys:
+                    value = batch[key]
+                    if torch.is_tensor(value) and torch.is_floating_point(value):
+                        batch[key] = value.to(dtype=model_dtype)
+                out = model(
+                    batch.to_dict(),
+                    compute_stress=compute_stress,
+                    training=self.use_compile,
+                    compute_edge_forces=self.compute_atomic_stresses,
+                    compute_atomic_stresses=self.compute_atomic_stresses,
+                )
+                if i == 0:
+                    ret_tensors, node_e0 = self._create_result_tensors(
+                        self.num_models, len(atoms), batch, out
+                    )
+                for key, val in ret_tensors.items():
+                    if out.get(key) is not None:
+                        val[i] = out[key].detach()
+
         self.results = {}
         scalar_tensors = set(["energy"])
         results_store_ensemble = set(["energy", "forces", "stress", "dipole"])
@@ -568,11 +629,7 @@ class MACECalculator(Calculator):
         if self.model_type == "PolarMACE":
             results_map.extend(
                 [
-                    (
-                        "interaction_energy",
-                        "interaction_energy",
-                        self.energy_units_to_eV,
-                    ),
+                    ("interaction_energy", "interaction_energy", self.energy_units_to_eV),
                     (
                         "electrostatic_energy",
                         "electrostatic_energy",
@@ -584,6 +641,7 @@ class MACECalculator(Calculator):
                     ("spin_charge_density", "spin_charge_density", 1.0),
                 ]
             )
+
         for results_key, ret_key, unit_conv in results_map:
             if ret_tensors.get(ret_key) is not None:
                 data = torch.mean(ret_tensors[ret_key], dim=0).cpu()
@@ -608,7 +666,6 @@ class MACECalculator(Calculator):
                     data *= unit_conv
                     self.results[results_key + "_var"] = data
 
-        # special cases
         if self.results.get("energy") is not None:
             self.results["free_energy"] = self.results["energy"]
         if self.results.get("node_energy") is not None:
@@ -622,6 +679,14 @@ class MACECalculator(Calculator):
                     full_3x3_to_voigt_6_stress(stress)
                     for stress in self.results["stresses"]
                 ]
+            )
+
+        if self.bias_weight > 0.0:
+            self.results["global_descriptor"] = (
+                out["global_descriptor"].detach().cpu().numpy()
+            )
+            self.results["bias_energy"] = (
+                out["bias_energy"].detach().cpu().numpy() * self.energy_units_to_eV
             )
 
     def get_dielectric_derivatives(self, atoms=None):
@@ -691,12 +756,20 @@ class MACECalculator(Calculator):
         """
         if global_descriptor:
             if not hasattr(self.models[0], "global_readout"):
-                raise ValueError("global_descriptor=True requires use_global_readout=True in the model.")
+                raise ValueError(
+                    "global_descriptor=True requires use_global_readout=True in the model."
+                )
+            if atoms is None and self.atoms is None:
+                raise ValueError("atoms not set")
+            if atoms is None:
+                atoms = self.atoms
+
             batch = self._atoms_to_batch(atoms)
             mask = None
             if bias_indices is not None:
                 mask = torch.zeros(len(atoms), dtype=torch.bool, device=self.device)
                 mask[np.asarray(bias_indices, dtype=int)] = True
+
             descriptors = [
                 model(
                     batch.to_dict(),
@@ -712,7 +785,7 @@ class MACECalculator(Calculator):
                 )["global_descriptor"]
                 for model in self.models
             ]
-            descriptors = [d.detach().cpu().numpy() for d in descriptors]
+            descriptors = [d.squeeze(0).detach().cpu().numpy() for d in descriptors]
             if self.num_models == 1:
                 return descriptors[0]
             return descriptors

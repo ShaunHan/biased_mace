@@ -41,7 +41,6 @@ from .utils import (
     prepare_graph,
 )
 from .global_readout import GlobalReadoutBlock
-from .utils import extract_invariant
 
 
 @compile_mode("script")
@@ -214,6 +213,19 @@ class MACE(torch.nn.Module):
             use_agnostic_product=use_agnostic_product,
         )
         self.products = torch.nn.ModuleList([prod])
+
+        self.use_global_readout = use_global_readout
+        if self.use_global_readout:
+            global_token_dim = torch.sum(prod.target_irreps.dim for prod in self.products)
+            self.global_readout = GlobalReadoutBlock(
+                token_dim=global_token_dim,
+                edge_dim=edge_feats_irreps.dim,
+                hidden_dim=global_readout_hidden_dim,
+                descriptor_dim=global_readout_descriptor_dim,
+                depth=global_readout_depth,
+                num_heads=global_readout_heads,
+                dropout=global_readout_dropout,
+            )
 
         self.readouts = torch.nn.ModuleList()
         if not use_last_readout_only:
@@ -409,21 +421,15 @@ class MACE(torch.nn.Module):
 
         global_descriptor = None
         global_energy = torch.zeros_like(total_energy)
-        if hasattr(self, "global_readout"):
-            node_tokens = extract_invariant(
-                node_feats_out,
-                num_layers=num_interactions,
-                num_features=num_invariant_features,
-                l_max=l_max,
-            )
+        if self.use_global_readout:
             global_descriptor, global_energy = self.global_readout(
-                node_tokens=node_tokens,
+                node_feats_out,
                 batch=data["batch"],
                 edge_index=data["edge_index"],
                 edge_feats=edge_feats,
                 node_mask=global_descriptor_mask,
             )
-            energies.append(global_energy)
+            total_energy = total_energy + global_energy
 
         forces, virials, stress, hessian, edge_forces = get_outputs(
             energy=total_energy,
@@ -496,7 +502,14 @@ class ScaleShiftMACE(MACE):
         global_readout_dropout: float = 0.0,
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        super().__init__(
+            use_global_readout=use_global_readout,
+            global_readout_hidden_dim=global_readout_hidden_dim,
+            global_readout_descriptor_dim=global_readout_descriptor_dim,
+            global_readout_depth=global_readout_depth,
+            global_readout_heads=global_readout_heads,
+            global_readout_dropout=global_readout_dropout,
+            **kwargs)
         self.scale_shift = ScaleShiftBlock(
             scale=atomic_inter_scale, shift=atomic_inter_shift
         )
@@ -513,6 +526,7 @@ class ScaleShiftMACE(MACE):
         compute_edge_forces: bool = False,
         compute_atomic_stresses: bool = False,
         lammps_mliap: bool = False,
+        global_descriptor_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, Optional[torch.Tensor]]:
         # Setup
         ctx = prepare_graph(
@@ -622,6 +636,17 @@ class ScaleShiftMACE(MACE):
             )
 
         node_feats_out = torch.cat(node_feats_list, dim=-1)
+        global_descriptor = None
+        global_energy = torch.zeros_like(inter_e)
+        if self.use_global_readout:
+            global_descriptor, global_energy = self.global_readout(
+                node_feats_out,
+                batch=data["batch"],
+                edge_index=data["edge_index"],
+                edge_feats=edge_feats,
+                node_mask=global_descriptor_mask,
+            )
+            inter_e = inter_e + global_energy
         node_inter_es = torch.sum(torch.stack(node_es_list, dim=0), dim=0)
         node_inter_es = self.scale_shift(node_inter_es, node_heads)
         inter_e = scatter_sum(node_inter_es, data["batch"], dim=-1, dim_size=num_graphs)
@@ -667,6 +692,8 @@ class ScaleShiftMACE(MACE):
             "hessian": hessian,
             "displacement": displacement,
             "node_feats": node_feats_out,
+            "global_descriptor": global_descriptor,
+            "global_energy": global_energy,
         }
 
 

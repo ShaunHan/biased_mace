@@ -263,6 +263,12 @@ def _build_model(
             use_embedding_readout=args.use_embedding_readout,
             use_last_readout_only=args.use_last_readout_only,
             use_agnostic_product=args.use_agnostic_product,
+            use_global_readout=args.use_global_readout,
+            global_readout_hidden_dim=args.global_readout_hidden_dim,
+            global_readout_descriptor_dim=args.global_readout_descriptor_dim,
+            global_readout_depth=args.global_readout_depth,
+            global_readout_heads=args.global_readout_heads,
+            global_readout_dropout=args.global_readout_dropout,
         )
     if args.model == "ScaleShiftMACE":
         return modules.ScaleShiftMACE(
@@ -282,6 +288,12 @@ def _build_model(
             use_embedding_readout=args.use_embedding_readout,
             use_last_readout_only=args.use_last_readout_only,
             use_agnostic_product=args.use_agnostic_product,
+            use_global_readout=args.use_global_readout,
+            global_readout_hidden_dim=args.global_readout_hidden_dim,
+            global_readout_descriptor_dim=args.global_readout_descriptor_dim,
+            global_readout_depth=args.global_readout_depth,
+            global_readout_heads=args.global_readout_heads,
+            global_readout_dropout=args.global_readout_dropout,
         )
     if args.model == "PolarMACE" and model_config_foundation is not None:
         return modules.PolarMACE(**model_config_foundation)
