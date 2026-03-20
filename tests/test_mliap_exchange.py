@@ -3,8 +3,8 @@ import types
 import torch
 from e3nn import o3
 
-from biased_mace.modules import blocks
-from biased_mace.modules.blocks import (
+from mace.modules import blocks
+from mace.modules.blocks import (
     RealAgnosticDensityResidualInteractionBlock,
     RealAgnosticResidualNonLinearInteractionBlock,
 )

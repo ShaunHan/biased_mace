@@ -3,7 +3,7 @@ python -m black .
 python -m isort .
 
 # Check
-python -m pylint --rcfile=pyproject.toml biased_mace tests scripts
+python -m pylint --rcfile=pyproject.toml mace tests scripts
 
 # Tests
 python -m pytest tests

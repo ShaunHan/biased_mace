@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional
 from torch import nn, optim
 
-from biased_mace.tools import (
+from mace.tools import (
     AtomicNumberTable,
     CheckpointHandler,
     CheckpointState,

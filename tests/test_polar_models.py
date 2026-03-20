@@ -14,12 +14,12 @@ from ase import Atoms
 from ase.io import read
 from e3nn import o3
 
-from biased_mace import data
-from biased_mace.calculators import MACECalculator
-from biased_mace.calculators.foundations_models import mace_polar
-from biased_mace.modules import interaction_classes
-from biased_mace.modules.extensions import PolarMACE
-from biased_mace.tools import torch_geometric, utils
+from mace import data
+from mace.calculators import MACECalculator
+from mace.calculators.foundations_models import mace_polar
+from mace.modules import interaction_classes
+from mace.modules.extensions import PolarMACE
+from mace.tools import torch_geometric, utils
 
 # pylint: disable=redefined-outer-name
 

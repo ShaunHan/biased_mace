@@ -7,7 +7,7 @@ import numpy as np
 from ase import Atoms
 from ase.build import molecule
 
-from biased_mace.calculators import MACECalculator
+from mace.calculators import MACECalculator
 
 
 def test_run_train_with_elec_temp(tmp_path):

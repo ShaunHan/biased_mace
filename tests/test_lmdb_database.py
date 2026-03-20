@@ -6,9 +6,9 @@ import torch
 from ase.build import molecule
 from ase.calculators.singlepoint import SinglePointCalculator
 
-from biased_mace.data.lmdb_dataset import LMDBDataset
-from biased_mace.tools import AtomicNumberTable, torch_geometric
-from biased_mace.tools.fairchem_dataset.lmdb_dataset_tools import LMDBDatabase
+from mace.data.lmdb_dataset import LMDBDataset
+from mace.tools import AtomicNumberTable, torch_geometric
+from mace.tools.fairchem_dataset.lmdb_dataset_tools import LMDBDatabase
 
 
 def test_lmdb_dataset():

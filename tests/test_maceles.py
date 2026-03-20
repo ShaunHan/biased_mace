@@ -10,14 +10,14 @@ import torch
 from ase.atoms import Atoms
 from e3nn import o3
 
-from biased_mace.calculators import MACECalculator
-from biased_mace.cli.eval_configs import run as mace_eval_configs_run
-from biased_mace.cli.run_train import run as mace_run
-from biased_mace.modules import interaction_classes
-from biased_mace.modules.extensions import MACELES
-from biased_mace.modules.models import ScaleShiftMACE
-from biased_mace.tools.arg_parser import build_default_arg_parser
-from biased_mace.tools.torch_tools import default_dtype
+from mace.calculators import MACECalculator
+from mace.cli.eval_configs import run as mace_eval_configs_run
+from mace.cli.run_train import run as mace_run
+from mace.modules import interaction_classes
+from mace.modules.extensions import MACELES
+from mace.modules.models import ScaleShiftMACE
+from mace.tools.arg_parser import build_default_arg_parser
+from mace.tools.torch_tools import default_dtype
 
 LES_AVAILABLE = bool((spec := importlib.util.find_spec("les")) is not None)
 CUET_AVAILABLE = bool((spec := importlib.util.find_spec("cuequivariance")) is not None)

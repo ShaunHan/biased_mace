@@ -9,13 +9,13 @@ from e3nn import o3
 from e3nn.util import jit
 from scipy.spatial.transform import Rotation as R
 
-from biased_mace import data, modules, tools
-from biased_mace.calculators import mace_mp, mace_off, mace_omol
-from biased_mace.calculators.foundations_models import mace_polar, polar_model_paths
-from biased_mace.tools import torch_geometric
-from biased_mace.tools.finetuning_utils import load_foundations_elements
-from biased_mace.tools.scripts_utils import extract_config_mace_model, remove_pt_head
-from biased_mace.tools.utils import AtomicNumberTable
+from mace import data, modules, tools
+from mace.calculators import mace_mp, mace_off, mace_omol
+from mace.calculators.foundations_models import mace_polar, polar_model_paths
+from mace.tools import torch_geometric
+from mace.tools.finetuning_utils import load_foundations_elements
+from mace.tools.scripts_utils import extract_config_mace_model, remove_pt_head
+from mace.tools.utils import AtomicNumberTable
 
 try:
     import graph_longrange  # noqa: F401

@@ -43,8 +43,8 @@ disable = [
 
 [tool.pylint.MASTER]
 ignore-paths = [
-    "^biased_mace/tools/torch_geometric/.*$",
-    "^biased_mace/tools/scatter.py$",
+    "^mace/tools/torch_geometric/.*$",
+    "^mace/tools/scatter.py$",
 ]
 
 [tool.pylint.FORMAT]

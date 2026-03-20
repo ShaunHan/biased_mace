@@ -9,10 +9,10 @@ import numpy as np
 import pytest
 from ase.atoms import Atoms
 
-from biased_mace.calculators.mace import MACECalculator
-from biased_mace.cli.run_train import run as run_mace_train
-from biased_mace.data.utils import KeySpecification
-from biased_mace.tools import build_default_arg_parser
+from mace.calculators.mace import MACECalculator
+from mace.cli.run_train import run as run_mace_train
+from mace.data.utils import KeySpecification
+from mace.tools import build_default_arg_parser
 
 run_train = Path(__file__).parent.parent / "mace" / "cli" / "run_train.py"
 
