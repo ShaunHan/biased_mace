@@ -20,7 +20,7 @@ from torch.optim import LBFGS
 from torch.utils.data import ConcatDataset
 from torch_ema import ExponentialMovingAverage
 
-import mace
+import biased_mace
 from biased_mace import data, tools
 from biased_mace.calculators.foundations_models import (
     mace_mp,
@@ -122,7 +122,7 @@ def run(args) -> None:
         logging.info(f"Processes: {world_size}")
 
     try:
-        logging.info(f"MACE version: {mace.__version__}")
+        logging.info(f"MACE version: {biased_mace.__version__}")
     except AttributeError:
         logging.info("Cannot find MACE version, please install MACE via pip")
     logging.debug(f"Configuration: {args}")
@@ -848,6 +848,13 @@ def run(args) -> None:
         keep=args.keep_checkpoints,
         swa_start=args.start_swa,
     )
+    logging.info("Model has global_readout:", hasattr(model, "global_readout"))
+    if hasattr(model, "global_readout"):
+        n = sum(p.numel() for p in model.global_readout.parameters())
+        ng = sum(p.numel() for p in model.global_readout.parameters() if p.requires_grad)
+        logging.info("global_readout params:", n, "trainable:", ng)
+    for group in optimizer.param_groups:
+        logging.info(group.get("name", "<unnamed>"), group["lr"])
 
     start_epoch = 0
     restart_lbfgs = False

@@ -1,4 +1,4 @@
-## Wrapper for mace.cli.run_train.main ##
+## Wrapper for biased_mace.cli.run_train.main ##
 
 from biased_mace.cli.run_train import main
 

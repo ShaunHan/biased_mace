@@ -298,6 +298,24 @@ def extract_config_mace_model(model: torch.nn.Module) -> Dict[str, Any]:
             else False
         ),
         "use_embedding_readout": (hasattr(model, "embedding_readout")),
+        "use_global_readout": hasattr(model, "global_readout"),
+        "global_readout_hidden_dim": getattr(model.global_readout, "hidden_dim", None)
+            if hasattr(model, "global_readout")
+            else None,
+        "global_readout_descriptor_dim": getattr(
+            model.global_readout, "descriptor_dim", None
+        )
+            if hasattr(model, "global_readout")
+            else None,
+        "global_readout_depth": getattr(model.global_readout, "depth", None)
+            if hasattr(model, "global_readout")
+            else None,
+        "global_readout_heads": getattr(model.global_readout, "num_heads", None)
+            if hasattr(model, "global_readout")
+            else None,
+        "global_readout_dropout": getattr(model.global_readout, "dropout", None)
+            if hasattr(model, "global_readout")
+            else None,
         "readout_cls": model.readouts[-1].__class__,
         "cueq_config": model.cueq_config if hasattr(model, "cueq_config") else None,
         "atomic_energies": model.atomic_energies_fn.atomic_energies.cpu().numpy(),
@@ -516,26 +534,26 @@ def convert_from_json_format(dict_input):
     dict_output = dict_input.copy()
     if (
         dict_input["interaction_cls"]
-        == "<class 'mace.modules.blocks.RealAgnosticResidualInteractionBlock'>"
+        == "<class 'biased_mace.modules.blocks.RealAgnosticResidualInteractionBlock'>"
     ):
         dict_output["interaction_cls"] = (
             modules.blocks.RealAgnosticResidualInteractionBlock
         )
     if (
         dict_input["interaction_cls"]
-        == "<class 'mace.modules.blocks.RealAgnosticInteractionBlock'>"
+        == "<class 'biased_mace.modules.blocks.RealAgnosticInteractionBlock'>"
     ):
         dict_output["interaction_cls"] = modules.blocks.RealAgnosticInteractionBlock
     if (
         dict_input["interaction_cls_first"]
-        == "<class 'mace.modules.blocks.RealAgnosticResidualInteractionBlock'>"
+        == "<class 'biased_mace.modules.blocks.RealAgnosticResidualInteractionBlock'>"
     ):
         dict_output["interaction_cls_first"] = (
             modules.blocks.RealAgnosticResidualInteractionBlock
         )
     if (
         dict_input["interaction_cls_first"]
-        == "<class 'mace.modules.blocks.RealAgnosticInteractionBlock'>"
+        == "<class 'biased_mace.modules.blocks.RealAgnosticInteractionBlock'>"
     ):
         dict_output["interaction_cls_first"] = (
             modules.blocks.RealAgnosticInteractionBlock
@@ -831,6 +849,10 @@ def get_params_options(
             logging.info("Freezing readout weights")
             lr_params_factors["readouts_lr_factor"] = 0.0
             freeze_module(model.readouts, True)
+            if hasattr(model, "global_readout") and model.global_readout is not None:
+                logging.info("Freezing global readout weights")
+                freeze_module(model.global_readout, True)
+                lr_params_factors["global_readout_lr_factor"] = 0.0
         if args.freeze >= 6:
             logging.info("Freezing product weights")
             lr_params_factors["products_lr_factor"] = 0.0
@@ -903,6 +925,15 @@ def get_params_options(
                 "name": "les_readouts",
                 "params": model.les_readouts.parameters(),
                 "weight_decay": 0.0,
+            }
+        )
+    if hasattr(model, "global_readout") and model.global_readout is not None:
+        param_options["params"].append(
+            {
+                "name": "global_readout",
+                "params": model.global_readout.parameters(),
+                "weight_decay": 0.0,
+                "lr": lr_params_factors.get("global_readout_lr_factor", 1.0) * args.lr,
             }
         )
     return param_options

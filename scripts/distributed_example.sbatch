@@ -10,7 +10,7 @@
 #SBATCH --exclusive
 #SBATCH --time=1:00:00
 
-srun python mace/scripts/run_train.py \
+srun python biased_mace/scripts/run_train.py \
     --name='model' \
     --model='MACE' \
     --num_interactions=2 \

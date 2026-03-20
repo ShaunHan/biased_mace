@@ -216,10 +216,11 @@ class MACE(torch.nn.Module):
 
         self.use_global_readout = use_global_readout
         if self.use_global_readout:
-            global_token_dim = torch.sum(prod.target_irreps.dim for prod in self.products)
+            self.global_readout_layer_irreps = [
+                str(prod.target_irreps) for prod in self.products
+            ]
             self.global_readout = GlobalReadoutBlock(
-                token_dim=global_token_dim,
-                edge_dim=edge_feats_irreps.dim,
+                layer_irreps=self.global_readout_layer_irreps,
                 hidden_dim=global_readout_hidden_dim,
                 descriptor_dim=global_readout_descriptor_dim,
                 depth=global_readout_depth,
@@ -414,22 +415,21 @@ class MACE(torch.nn.Module):
             energies.append(energy)
             node_energies_list.append(node_es)
 
-        contributions = torch.stack(energies, dim=-1)
-        total_energy = torch.sum(contributions, dim=-1)
-        node_energy = torch.sum(torch.stack(node_energies_list, dim=-1), dim=-1)
         node_feats_out = torch.cat(node_feats_concat, dim=-1)
 
         global_descriptor = None
-        global_energy = torch.zeros_like(total_energy)
+        global_energy = torch.zeros_like(e0)
         if self.use_global_readout:
             global_descriptor, global_energy = self.global_readout(
                 node_feats_out,
                 batch=data["batch"],
-                edge_index=data["edge_index"],
-                edge_feats=edge_feats,
                 node_mask=global_descriptor_mask,
             )
-            total_energy += global_energy
+            energies.append(global_energy)
+
+        contributions = torch.stack(energies, dim=-1)
+        total_energy = torch.sum(contributions, dim=-1)
+        node_energy = torch.sum(torch.stack(node_energies_list, dim=-1), dim=-1)
 
         forces, virials, stress, hessian, edge_forces = get_outputs(
             energy=total_energy,
@@ -639,14 +639,13 @@ class ScaleShiftMACE(MACE):
         node_inter_es = torch.sum(torch.stack(node_es_list, dim=0), dim=0)
         node_inter_es = self.scale_shift(node_inter_es, node_heads)
         inter_e = scatter_sum(node_inter_es, data["batch"], dim=-1, dim_size=num_graphs)
+
         global_descriptor = None
         global_energy = torch.zeros_like(inter_e)
         if self.use_global_readout:
             global_descriptor, global_energy = self.global_readout(
                 node_feats_out,
                 batch=data["batch"],
-                edge_index=data["edge_index"],
-                edge_feats=edge_feats,
                 node_mask=global_descriptor_mask,
             )
             inter_e += global_energy

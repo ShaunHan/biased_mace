@@ -1,4 +1,4 @@
-## Wrapper for mace.cli.eval_configs.main ##
+## Wrapper for biased_mace.cli.eval_configs.main ##
 
 from biased_mace.cli.eval_configs import main
 
