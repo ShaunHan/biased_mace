@@ -939,14 +939,6 @@ def run(args) -> None:
                 "Please install it to use XPU device."
             )
 
-    print("Model has global_readout:", hasattr(model, "global_readout"))
-    if hasattr(model, "global_readout"):
-        n = sum(p.numel() for p in model.global_readout.parameters())
-        ng = sum(p.numel() for p in model.global_readout.parameters() if p.requires_grad)
-        print("global_readout params:", n, "trainable:", ng)
-    for group in optimizer.param_groups:
-        print(group.get("name", "<unnamed>"), group["lr"])
-
     tools.train(
         model=model,
         loss_fn=loss_fn,

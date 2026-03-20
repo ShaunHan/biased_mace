@@ -214,20 +214,6 @@ class MACE(torch.nn.Module):
         )
         self.products = torch.nn.ModuleList([prod])
 
-        self.use_global_readout = use_global_readout
-        if self.use_global_readout:
-            self.global_readout_layer_irreps = [
-                str(prod.linear.irreps_out) for prod in self.products
-            ]
-            self.global_readout = GlobalReadoutBlock(
-                layer_irreps=self.global_readout_layer_irreps,
-                hidden_dim=global_readout_hidden_dim,
-                descriptor_dim=global_readout_descriptor_dim,
-                depth=global_readout_depth,
-                num_heads=global_readout_heads,
-                dropout=global_readout_dropout,
-            )
-
         self.readouts = torch.nn.ModuleList()
         if not use_last_readout_only:
             self.readouts.append(
@@ -293,6 +279,18 @@ class MACE(torch.nn.Module):
                         oeq_config,
                     )
                 )
+
+        self.use_global_readout = use_global_readout
+        if self.use_global_readout:
+            global_input_dim = int(sum(prod.linear.irreps_out.dim for prod in self.products))
+            self.global_readout = GlobalReadoutBlock(
+                input_dim=global_input_dim,
+                hidden_dim=global_readout_hidden_dim,
+                descriptor_dim=global_readout_descriptor_dim,
+                depth=global_readout_depth,
+                num_heads=global_readout_heads,
+                dropout=global_readout_dropout,
+            )
 
     def forward(
         self,
