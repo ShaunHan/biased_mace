@@ -429,7 +429,7 @@ class MACE(torch.nn.Module):
                 edge_feats=edge_feats,
                 node_mask=global_descriptor_mask,
             )
-            total_energy = total_energy + global_energy
+            total_energy += global_energy
 
         forces, virials, stress, hessian, edge_forces = get_outputs(
             energy=total_energy,
@@ -636,6 +636,9 @@ class ScaleShiftMACE(MACE):
             )
 
         node_feats_out = torch.cat(node_feats_list, dim=-1)
+        node_inter_es = torch.sum(torch.stack(node_es_list, dim=0), dim=0)
+        node_inter_es = self.scale_shift(node_inter_es, node_heads)
+        inter_e = scatter_sum(node_inter_es, data["batch"], dim=-1, dim_size=num_graphs)
         global_descriptor = None
         global_energy = torch.zeros_like(inter_e)
         if self.use_global_readout:
@@ -646,10 +649,7 @@ class ScaleShiftMACE(MACE):
                 edge_feats=edge_feats,
                 node_mask=global_descriptor_mask,
             )
-            inter_e = inter_e + global_energy
-        node_inter_es = torch.sum(torch.stack(node_es_list, dim=0), dim=0)
-        node_inter_es = self.scale_shift(node_inter_es, node_heads)
-        inter_e = scatter_sum(node_inter_es, data["batch"], dim=-1, dim_size=num_graphs)
+            inter_e += global_energy
 
         total_energy = e0 + inter_e
         node_energy = node_e0.clone().double() + node_inter_es.clone().double()
