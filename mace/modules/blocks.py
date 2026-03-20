@@ -472,6 +472,7 @@ class EquivariantProductBasisBlock(torch.nn.Module):
     ) -> None:
         super().__init__()
 
+        self.target_irreps = target_irreps
         self.use_sc = use_sc
         self.use_agnostic_product = use_agnostic_product
         if self.use_agnostic_product:

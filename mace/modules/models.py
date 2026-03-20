@@ -217,7 +217,7 @@ class MACE(torch.nn.Module):
         self.use_global_readout = use_global_readout
         if self.use_global_readout:
             self.global_readout_layer_irreps = [
-                str(prod.target_irreps) for prod in self.products
+                str(prod.linear.irreps_out) for prod in self.products
             ]
             self.global_readout = GlobalReadoutBlock(
                 layer_irreps=self.global_readout_layer_irreps,
