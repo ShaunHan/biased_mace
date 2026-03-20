@@ -19,9 +19,9 @@ import torch.distributed
 from e3nn import o3
 from torch.optim.swa_utils import SWALR, AveragedModel
 
-from mace import data, modules, tools
-from mace.data import KeySpecification
-from mace.tools.train import SWAContainer
+from biased_mace import data, modules, tools
+from biased_mace.data import KeySpecification
+from biased_mace.tools.train import SWAContainer
 
 
 @dataclasses.dataclass

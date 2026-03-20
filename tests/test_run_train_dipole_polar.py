@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from ase.atoms import Atoms
 
-from mace.calculators import MACECalculator
+from biased_mace.calculators import MACECalculator
 
 try:
     import cuequivariance as cue  # pylint: disable=unused-import

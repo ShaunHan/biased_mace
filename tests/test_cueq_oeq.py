@@ -9,12 +9,12 @@ import torch
 import torch.nn.functional as F
 from e3nn import o3
 
-from mace import data, modules, tools
-from mace.cli.convert_cueq_e3nn import run as run_cueq_to_e3nn
-from mace.cli.convert_e3nn_cueq import run as run_e3nn_to_cueq
-from mace.cli.convert_e3nn_oeq import run as run_e3nn_to_oeq
-from mace.cli.convert_oeq_e3nn import run as run_oeq_to_e3nn
-from mace.tools import torch_geometric
+from biased_mace import data, modules, tools
+from biased_mace.cli.convert_cueq_e3nn import run as run_cueq_to_e3nn
+from biased_mace.cli.convert_e3nn_cueq import run as run_e3nn_to_cueq
+from biased_mace.cli.convert_e3nn_oeq import run as run_e3nn_to_oeq
+from biased_mace.cli.convert_oeq_e3nn import run as run_oeq_to_e3nn
+from biased_mace.tools import torch_geometric
 
 try:
     import cuequivariance as cue  # pylint: disable=unused-import

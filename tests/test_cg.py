@@ -1,6 +1,6 @@
 from e3nn import o3
 
-from mace.tools import cg
+from biased_mace.tools import cg
 
 
 def test_U_matrix():

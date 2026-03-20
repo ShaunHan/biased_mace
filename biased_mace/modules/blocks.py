@@ -12,7 +12,7 @@ import torch.nn.functional
 from e3nn import nn, o3
 from e3nn.util.jit import compile_mode
 
-from mace.modules.wrapper_ops import (
+from biased_mace.modules.wrapper_ops import (
     CuEquivarianceConfig,
     FullyConnectedTensorProduct,
     Linear,
@@ -21,9 +21,9 @@ from mace.modules.wrapper_ops import (
     TensorProduct,
     TransposeIrrepsLayoutWrapper,
 )
-from mace.tools.compile import simplify_if_compile
-from mace.tools.scatter import scatter_sum
-from mace.tools.utils import LAMMPS_MP
+from biased_mace.tools.compile import simplify_if_compile
+from biased_mace.tools.scatter import scatter_sum
+from biased_mace.tools.utils import LAMMPS_MP
 
 from .irreps_tools import mask_head, reshape_irreps, tp_out_irreps_with_instructions
 from .radial import (

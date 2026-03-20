@@ -20,7 +20,7 @@ from typing import Optional
 import numpy as np
 from e3nn import o3
 
-from mace.tools.cg import U_matrix_real
+from biased_mace.tools.cg import U_matrix_real
 
 try:
     import cuequivariance as cue

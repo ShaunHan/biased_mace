@@ -14,9 +14,9 @@ import torch
 from e3nn import nn, o3
 from e3nn.util.jit import compile_mode
 
-from mace.modules.blocks import GeneralNonLinearBiasReadoutBlock
-from mace.modules.irreps_tools import tp_out_irreps_with_instructions
-from mace.modules.radial import RadialMLP
+from biased_mace.modules.blocks import GeneralNonLinearBiasReadoutBlock
+from biased_mace.modules.irreps_tools import tp_out_irreps_with_instructions
+from biased_mace.modules.radial import RadialMLP
 
 from .wrapper_ops import (
     CuEquivarianceConfig,

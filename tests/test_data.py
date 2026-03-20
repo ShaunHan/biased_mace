@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from mace.data import (
+from biased_mace.data import (
     AtomicData,
     Configuration,
     HDF5Dataset,
@@ -15,7 +15,7 @@ from mace.data import (
     get_neighborhood,
     save_configurations_as_HDF5,
 )
-from mace.tools import AtomicNumberTable, torch_geometric
+from biased_mace.tools import AtomicNumberTable, torch_geometric
 
 mace_path = Path(__file__).parent.parent
 

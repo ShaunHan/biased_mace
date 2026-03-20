@@ -7,8 +7,8 @@ import torch
 import torch.nn.functional as F
 from e3nn import o3
 
-from mace import data, modules, tools
-from mace.tools import scripts_utils, torch_geometric
+from biased_mace import data, modules, tools
+from biased_mace.tools import scripts_utils, torch_geometric
 
 try:
     import schedulefree

@@ -8,9 +8,9 @@ os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 import torch
 from e3nn.util import jit
 
-from mace.calculators import LAMMPS_MACE
-from mace.calculators.lammps_mliap_mace import LAMMPS_MLIAP_MACE
-from mace.cli.convert_e3nn_cueq import run as run_e3nn_to_cueq
+from biased_mace.calculators import LAMMPS_MACE
+from biased_mace.calculators.lammps_mliap_mace import LAMMPS_MLIAP_MACE
+from biased_mace.cli.convert_e3nn_cueq import run as run_e3nn_to_cueq
 
 
 def parse_args():

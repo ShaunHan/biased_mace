@@ -8,10 +8,10 @@ import pytest
 import torch
 from e3nn import o3
 
-from mace import data, modules, tools
-from mace.data import Configuration
-from mace.modules.lora import inject_lora, merge_lora_weights
-from mace.tools import torch_geometric
+from biased_mace import data, modules, tools
+from biased_mace.data import Configuration
+from biased_mace.modules.lora import inject_lora, merge_lora_weights
+from biased_mace.tools import torch_geometric
 
 
 def _random_config() -> Configuration:
@@ -257,7 +257,7 @@ def test_lora_merge_preserves_outputs(build_lora_model, random_configs) -> None:
 
 def test_lora_merge_removes_wrappers(build_lora_model) -> None:
     """Test that merging removes LoRA wrapper modules."""
-    from mace.modules.lora import LoRADenseLinear, LoRAFCLayer, LoRAO3Linear
+    from biased_mace.modules.lora import LoRADenseLinear, LoRAFCLayer, LoRAO3Linear
 
     model, _ = build_lora_model(rank=2, alpha=0.5, randomize=True)
 
@@ -330,8 +330,8 @@ def test_lora_merge_preserves_equivariance(build_lora_model, random_configs) -> 
 
 def test_lora_evaluate_preserves_frozen_state(build_lora_model, random_configs) -> None:
     """Test that evaluate() preserves requires_grad states for LoRA models."""
-    from mace.modules.loss import WeightedEnergyForcesLoss
-    from mace.tools import evaluate
+    from biased_mace.modules.loss import WeightedEnergyForcesLoss
+    from biased_mace.tools import evaluate
 
     model, table = build_lora_model(rank=2, alpha=0.5, randomize=True)
 

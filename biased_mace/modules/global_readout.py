@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
-from mace.tools.scatter import scatter_mean
+from biased_mace.tools.scatter import scatter_mean
 
 
 class GlobalReadoutBlock(nn.Module):

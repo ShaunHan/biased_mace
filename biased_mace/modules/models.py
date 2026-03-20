@@ -11,10 +11,10 @@ import torch
 from e3nn import o3
 from e3nn.util.jit import compile_mode
 
-from mace.modules.embeddings import GenericJointEmbedding
-from mace.modules.radial import ZBLBasis
-from mace.tools.scatter import scatter_mean, scatter_sum
-from mace.tools.torch_tools import get_change_of_basis, spherical_to_cartesian
+from biased_mace.modules.embeddings import GenericJointEmbedding
+from biased_mace.modules.radial import ZBLBasis
+from biased_mace.tools.scatter import scatter_mean, scatter_sum
+from biased_mace.tools.torch_tools import get_change_of_basis, spherical_to_cartesian
 
 from .blocks import (
     AtomicEnergiesBlock,

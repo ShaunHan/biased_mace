@@ -56,7 +56,7 @@ from .utils import (
     compute_rms_dipoles,
     compute_statistics,
 )
-from .global_readout import GlobalTransformerReadoutBlock
+from .global_readout import GlobalReadoutBlock
 
 interaction_classes: Dict[str, Type[InteractionBlock]] = {
     "RealAgnosticResidualInteractionBlock": RealAgnosticResidualInteractionBlock,

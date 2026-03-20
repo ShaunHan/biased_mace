@@ -10,7 +10,7 @@ import torch
 from e3nn import o3
 from e3nn.util.jit import compile_mode
 
-from mace.modules.wrapper_ops import CuEquivarianceConfig
+from biased_mace.modules.wrapper_ops import CuEquivarianceConfig
 
 
 # Based on mir-group/nequip

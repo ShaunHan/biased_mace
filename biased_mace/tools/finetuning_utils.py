@@ -2,7 +2,7 @@ from typing import Optional
 
 import torch
 
-from mace.tools.utils import AtomicNumberTable
+from biased_mace.tools.utils import AtomicNumberTable
 
 
 def load_foundations_elements(

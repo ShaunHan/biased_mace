@@ -13,10 +13,10 @@ import numpy as np
 import torch
 from e3nn import o3
 
-from mace import data
-from mace.cli.convert_e3nn_cueq import run as run_e3nn_to_cueq
-from mace.modules.utils import extract_invariant
-from mace.tools import torch_geometric, torch_tools, utils
+from biased_mace import data
+from biased_mace.cli.convert_e3nn_cueq import run as run_e3nn_to_cueq
+from biased_mace.modules.utils import extract_invariant
+from biased_mace.tools import torch_geometric, torch_tools, utils
 
 
 def parse_args() -> argparse.Namespace:

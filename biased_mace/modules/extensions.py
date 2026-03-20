@@ -17,19 +17,19 @@ try:
 except (ImportError, ModuleNotFoundError):
     GRAPH_LONGRANGE_AVAILABLE = False
 
-from mace.modules.blocks import (
+from biased_mace.modules.blocks import (
     LinearReadoutBlock,
     NonLinearBiasReadoutBlock,
     NonLinearReadoutBlock,
 )
-from mace.modules.models import ScaleShiftMACE
-from mace.modules.utils import get_atomic_virials_stresses, get_outputs, prepare_graph
-from mace.modules.wrapper_ops import (
+from biased_mace.modules.models import ScaleShiftMACE
+from biased_mace.modules.utils import get_atomic_virials_stresses, get_outputs, prepare_graph
+from biased_mace.modules.wrapper_ops import (
     CuEquivarianceConfig,
     OEQConfig,
     TransposeIrrepsLayoutWrapper,
 )
-from mace.tools.scatter import scatter_mean, scatter_sum
+from biased_mace.tools.scatter import scatter_mean, scatter_sum
 
 from .field_blocks import (
     EnvironmentDependentSpinSourceBlock,

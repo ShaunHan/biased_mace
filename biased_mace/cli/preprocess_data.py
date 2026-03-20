@@ -16,13 +16,13 @@ import h5py
 import numpy as np
 import tqdm
 
-from mace import data, tools
-from mace.data import KeySpecification, update_keyspec_from_kwargs
-from mace.data.utils import save_configurations_as_HDF5
-from mace.modules import compute_statistics
-from mace.tools import torch_geometric
-from mace.tools.scripts_utils import get_atomic_energies, get_dataset_from_xyz
-from mace.tools.utils import AtomicNumberTable
+from biased_mace import data, tools
+from biased_mace.data import KeySpecification, update_keyspec_from_kwargs
+from biased_mace.data.utils import save_configurations_as_HDF5
+from biased_mace.modules import compute_statistics
+from biased_mace.tools import torch_geometric
+from biased_mace.tools.scripts_utils import get_atomic_energies, get_dataset_from_xyz
+from biased_mace.tools.utils import AtomicNumberTable
 
 
 def compute_stats_target(

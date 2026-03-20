@@ -13,7 +13,7 @@ import torch
 from ase.atoms import Atoms
 from ase.calculators.singlepoint import SinglePointCalculator
 
-from mace.calculators import MACECalculator, mace_mp
+from biased_mace.calculators import MACECalculator, mace_mp
 
 try:
     import cuequivariance as cue  # pylint: disable=unused-import

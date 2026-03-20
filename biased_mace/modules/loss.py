@@ -9,8 +9,8 @@ from typing import Optional
 import torch
 import torch.distributed as dist
 
-from mace.tools import TensorDict
-from mace.tools.torch_geometric import Batch
+from biased_mace.tools import TensorDict
+from biased_mace.tools.torch_geometric import Batch
 
 
 # ------------------------------------------------------------------------------

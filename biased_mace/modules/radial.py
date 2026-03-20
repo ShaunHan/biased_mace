@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from e3nn.util.jit import compile_mode
 
-from mace.tools.scatter import scatter_sum
+from biased_mace.tools.scatter import scatter_sum
 
 
 @compile_mode("script")

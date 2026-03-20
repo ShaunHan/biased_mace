@@ -12,10 +12,10 @@ from ase.atoms import Atoms
 from ase.calculators.test import gradient_test
 from ase.filters import FrechetCellFilter
 
-from mace.calculators import mace_mp, mace_off
-from mace.calculators.foundations_models import mace_omol, mace_polar
-from mace.calculators.mace import MACECalculator
-from mace.modules.models import ScaleShiftMACE
+from biased_mace.calculators import mace_mp, mace_off
+from biased_mace.calculators.foundations_models import mace_omol, mace_polar
+from biased_mace.calculators.mace import MACECalculator
+from biased_mace.modules.models import ScaleShiftMACE
 
 try:
     import cuequivariance as cue  # pylint: disable=unused-import

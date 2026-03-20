@@ -21,8 +21,8 @@ from torch.utils.data import ConcatDataset
 from torch_ema import ExponentialMovingAverage
 
 import mace
-from mace import data, tools
-from mace.calculators.foundations_models import (
+from biased_mace import data, tools
+from biased_mace.calculators.foundations_models import (
     mace_mp,
     mace_mp_names,
     mace_off,
@@ -30,17 +30,17 @@ from mace.calculators.foundations_models import (
     mace_polar,
     polar_model_names,
 )
-from mace.cli.convert_cueq_e3nn import run as run_cueq_to_e3nn
-from mace.cli.convert_e3nn_cueq import run as run_e3nn_to_cueq
-from mace.cli.convert_e3nn_oeq import run as run_e3nn_to_oeq
-from mace.cli.convert_oeq_e3nn import run as run_oeq_to_e3nn
-from mace.cli.visualise_train import TrainingPlotter
-from mace.data import KeySpecification, update_keyspec_from_kwargs
-from mace.modules.lora import inject_LoRAs, merge_lora_weights
-from mace.tools import torch_geometric
-from mace.tools.distributed_tools import init_distributed
-from mace.tools.model_script_utils import configure_model
-from mace.tools.multihead_tools import (
+from biased_mace.cli.convert_cueq_e3nn import run as run_cueq_to_e3nn
+from biased_mace.cli.convert_e3nn_cueq import run as run_e3nn_to_cueq
+from biased_mace.cli.convert_e3nn_oeq import run as run_e3nn_to_oeq
+from biased_mace.cli.convert_oeq_e3nn import run as run_oeq_to_e3nn
+from biased_mace.cli.visualise_train import TrainingPlotter
+from biased_mace.data import KeySpecification, update_keyspec_from_kwargs
+from biased_mace.modules.lora import inject_LoRAs, merge_lora_weights
+from biased_mace.tools import torch_geometric
+from biased_mace.tools.distributed_tools import init_distributed
+from biased_mace.tools.model_script_utils import configure_model
+from biased_mace.tools.multihead_tools import (
     HeadConfig,
     apply_pseudolabels_to_pt_head_configs,
     assemble_replay_data,
@@ -48,12 +48,12 @@ from mace.tools.multihead_tools import (
     prepare_default_head,
     prepare_pt_head,
 )
-from mace.tools.run_train_utils import (
+from biased_mace.tools.run_train_utils import (
     combine_datasets,
     load_dataset_for_path,
     normalize_file_paths,
 )
-from mace.tools.scripts_utils import (
+from biased_mace.tools.scripts_utils import (
     LRScheduler,
     SubsetCollection,
     check_path_ase_read,
@@ -73,8 +73,8 @@ from mace.tools.scripts_utils import (
     remove_pt_head,
     setup_wandb,
 )
-from mace.tools.tables_utils import create_error_table
-from mace.tools.utils import AtomicNumberTable
+from biased_mace.tools.tables_utils import create_error_table
+from biased_mace.tools.utils import AtomicNumberTable
 
 
 def main() -> None:
@@ -132,7 +132,7 @@ def run(args) -> None:
     commit = print_git_commit()
     model_foundation: Optional[torch.nn.Module] = None
     foundation_model_avg_num_neighbors = 0
-    # Filter out None from mace_mp_names to get valid model names
+    # Filter out None from biased_mace_mp_names to get valid model names
     valid_mace_mp_models = [name for name in mace_mp_names if name is not None]
     args.foundation_model_kwargs = ast.literal_eval(args.foundation_model_kwargs)
     args.foundation_model_kwargs["head"] = args.foundation_head

@@ -17,8 +17,8 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from mace.calculators import MACECalculator, mace_mp
-from mace.calculators.foundations_models import mace_mp_names
+from biased_mace.calculators import MACECalculator, mace_mp
+from biased_mace.calculators.foundations_models import mace_mp_names
 
 try:
     import fpsample  # type: ignore

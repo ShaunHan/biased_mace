@@ -4,7 +4,7 @@ import pytest
 from ase import Atoms
 from ase.build import molecule
 
-from mace.cli.fine_tuning_select import (
+from biased_mace.cli.fine_tuning_select import (
     FilteringType,
     SelectionSettings,
     SubselectType,

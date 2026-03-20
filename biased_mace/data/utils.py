@@ -14,7 +14,7 @@ import ase.io
 import h5py
 import numpy as np
 
-from mace.tools import AtomicNumberTable, DefaultKeys
+from biased_mace.tools import AtomicNumberTable, DefaultKeys
 
 Positions = np.ndarray  # [..., 3]
 Cell = np.ndarray  # [3,3]
@@ -456,8 +456,8 @@ def estimate_e0s_from_foundation(
         for i, config in enumerate(valid_configs):
             # Convert to AtomicData for model prediction
             # Import here to avoid circular dependency
-            from mace.data import AtomicData
-            from mace.tools import torch_geometric
+            from biased_mace.data import AtomicData
+            from biased_mace.tools import torch_geometric
 
             atomic_data = AtomicData.from_config(
                 config,

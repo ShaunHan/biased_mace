@@ -5,12 +5,12 @@ import numpy as np
 import torch
 from e3nn import o3
 
-from mace import modules
-from mace.modules.wrapper_ops import CuEquivarianceConfig
-from mace.tools.finetuning_utils import load_foundations_elements
-from mace.tools.scripts_utils import extract_config_mace_model
-from mace.tools.torch_tools import dtype_dict
-from mace.tools.utils import AtomicNumberTable
+from biased_mace import modules
+from biased_mace.modules.wrapper_ops import CuEquivarianceConfig
+from biased_mace.tools.finetuning_utils import load_foundations_elements
+from biased_mace.tools.scripts_utils import extract_config_mace_model
+from biased_mace.tools.torch_tools import dtype_dict
+from biased_mace.tools.utils import AtomicNumberTable
 
 
 def configure_model(
@@ -340,7 +340,7 @@ def _build_model(
     if args.model == "FoundationMACE":
         return modules.ScaleShiftMACE(**model_config_foundation)
     if args.model == "FoundationMACELES":
-        from mace.modules.extensions import MACELES
+        from biased_mace.modules.extensions import MACELES
 
         return MACELES(
             les_arguments=args.les_arguments,
@@ -404,7 +404,7 @@ def _build_model(
             MLP_irreps=o3.Irreps(args.MLP_irreps),
         )
     if args.model == "MACELES":
-        from mace.modules.extensions import MACELES
+        from biased_mace.modules.extensions import MACELES
 
         return MACELES(
             les_arguments=args.les_arguments,

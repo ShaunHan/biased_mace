@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from ase.build import fcc111
 
-from mace.calculators import mace_mp
+from biased_mace.calculators import mace_mp
 
 
 @pytest.fixture(name="setup_calculator_")
