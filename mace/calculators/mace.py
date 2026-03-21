@@ -25,6 +25,7 @@ from mace.modules.utils import extract_invariant
 from mace.tools import torch_geometric, torch_tools, utils
 from mace.tools.compile import prepare
 from mace.tools.scripts_utils import extract_model
+from mace.modules.utils import extract_invariant, get_outputs, get_atomic_virials_stresses
 
 try:
     from mace.cli.convert_e3nn_cueq import run as run_e3nn_to_cueq
@@ -515,7 +516,7 @@ class MACECalculator(Calculator):
         else:
             compute_stress = False
 
-        # Biased single-model
+        # Biased single-model path
         if self.bias_weight > 0.0:
             batch = self._clone_batch(batch_base, positions_requires_grad=True)
             model = self.models[0]
@@ -561,12 +562,29 @@ class MACECalculator(Calculator):
                 compute_edge_forces=self.compute_atomic_stresses,
             )
 
+            atomic_virials = None
+            atomic_stresses = None
+            if self.compute_atomic_stresses and edge_forces is not None:
+                atomic_virials, atomic_stresses = get_atomic_virials_stresses(
+                    edge_forces=edge_forces,
+                    edge_index=batch["edge_index"],
+                    vectors=batch["vectors"],
+                    num_atoms=batch["positions"].shape[0],
+                    batch=batch["batch"],
+                    cell=batch["cell"],
+                )
+            else:
+                atomic_virials = None
+                atomic_stresses = None
+
             out["energy"] = total_energy
             out["forces"] = forces
             out["virials"] = virials
             out["stress"] = stress
             out["hessian"] = hessian
             out["edge_forces"] = edge_forces
+            out["atomic_virials"] = atomic_virials
+            out["atomic_stresses"] = atomic_stresses
             out["bias_energy"] = bias_energy
             out["global_descriptor"] = current_descriptor
 
