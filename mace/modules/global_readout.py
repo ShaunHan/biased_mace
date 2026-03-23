@@ -99,7 +99,7 @@ class GlobalReadoutBlock(nn.Module):
 
     def forward(
         self,
-        node_tokens: torch.Tensor,
+        node_feats: torch.Tensor,
         batch: torch.Tensor,
         node_mask: Optional[torch.Tensor] = None,
         edge_index: Optional[torch.Tensor] = None,
@@ -107,16 +107,16 @@ class GlobalReadoutBlock(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         del edge_index, edge_feats
 
-        if node_tokens.dim() != 2:
-            node_tokens = node_tokens.reshape(node_tokens.shape[0], -1)
+        if node_feats.dim() != 2:
+            node_feats = node_feats.reshape(node_feats.shape[0], -1)
 
-        if node_tokens.shape[-1] != self.input_dim:
+        if node_feats.shape[-1] != self.input_dim:
             raise RuntimeError(
                 f"GlobalReadoutBlock expected input_dim={self.input_dim}, "
-                f"but got node_tokens.shape[-1]={node_tokens.shape[-1]}"
+                f"but got node_feats.shape[-1]={node_feats.shape[-1]}"
             )
 
-        x = self.input_proj(self.input_norm(node_tokens))
+        x = self.input_proj(self.input_norm(node_feats))
         x, key_padding_mask = self._pack_graphs(x, batch, node_mask=node_mask)
 
         x = self.encoder(x, src_key_padding_mask=key_padding_mask)
