@@ -455,19 +455,6 @@ class MACE(torch.nn.Module):
                 cell=cell,
             )
 
-        self.use_global_readout = use_global_readout
-
-        if self.use_global_readout:
-            self.global_readout_token_dim = int(np.sum(per_layer_features[:num_interactions]))
-            self.global_readout = GlobalReadoutBlock(
-                token_dim=self.global_readout_token_dim,
-                edge_dim=edge_feats_irreps.dim,
-                hidden_dim=global_readout_hidden_dim,
-                descriptor_dim=global_readout_descriptor_dim,
-                depth=global_readout_depth,
-                num_heads=global_readout_heads,
-                dropout=global_readout_dropout,
-            )
         return {
             "energy": total_energy,
             "node_energy": node_energy,
