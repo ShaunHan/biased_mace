@@ -8,11 +8,7 @@ from mace.tools.scatter import scatter_mean
 
 
 class GlobalReadoutBlock(nn.Module):
-    """
-    Permutation-invariant global readout over atomwise MACE features.
-    This version is dimension-agnostic at the model level, but uses a fixed
-    input_dim passed at construction time, so it works with CuEq conversion.
-    """
+    """Permutation-invariant global readout over node features."""
 
     def __init__(
         self,
