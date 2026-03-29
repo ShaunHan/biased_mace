@@ -281,7 +281,7 @@ class MACE(torch.nn.Module):
                 )
 
         self.use_global_readout = use_global_readout
-        if self.use_global_readout:
+        if getattr(self, "use_global_readout", False):
             global_input_dim = int(sum(prod.linear.irreps_out.dim for prod in self.products))
             self.global_readout = GlobalReadoutBlock(
                 input_dim=global_input_dim,
@@ -417,7 +417,7 @@ class MACE(torch.nn.Module):
 
         global_descriptor = None
         global_energy = torch.zeros_like(e0)
-        if self.use_global_readout:
+        if getattr(self, "use_global_readout", False):
             global_descriptor, global_energy = self.global_readout(
                 node_feats_out,
                 batch=data["batch"],
@@ -627,7 +627,7 @@ class ScaleShiftMACE(MACE):
 
         global_descriptor = None
         global_energy = torch.zeros_like(inter_e)
-        if self.use_global_readout:
+        if getattr(self, "use_global_readout", False):
             global_descriptor, global_energy = self.global_readout(
                 node_feats_out,
                 batch=data["batch"],
