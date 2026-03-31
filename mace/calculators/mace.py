@@ -91,7 +91,7 @@ class MACECalculator(Calculator):
         model_type="MACE",
         bias_weight: float = 0.0,
         bias_indices=None,
-        product_atoms=None,
+        target_atoms=None,
         compile_mode=None,
         fullgraph=True,
         enable_cueq=False,
@@ -240,11 +240,11 @@ class MACECalculator(Calculator):
             raise ValueError("bias_weight must be in [0, 1].")
         self.bias_weight = float(bias_weight)
         self.bias_indices = None if bias_indices is None else np.asarray(bias_indices, dtype=int)
-        self.product_atoms = product_atoms
+        self.target_atoms = target_atoms
         self.target_global_descriptor = None
         if self.bias_weight > 0.0:
-            if product_atoms is None:
-                raise ValueError("product_atoms must be provided when bias_weight > 0.")
+            if target_atoms is None:
+                raise ValueError("target_atoms must be provided when bias_weight > 0.")
             if self.num_models != 1:
                 raise ValueError(
                     "Biased calculation is currently implemented for a single MACE model only."
@@ -356,7 +356,7 @@ class MACECalculator(Calculator):
                 param.requires_grad = False
 
         if self.bias_weight > 0.0:
-            self.target_global_descriptor = self._compute_global_descriptor(self.product_atoms).detach()
+            self.target_global_descriptor = self._compute_global_descriptor(self.target_atoms).detach()
 
     def check_state(self, atoms, tol: float = 1e-15) -> list:
         """
