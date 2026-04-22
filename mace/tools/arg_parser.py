@@ -1100,6 +1100,10 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         default=False,
     )
     parser.add_argument(
+        "--global_readout_from_invariants_only",
+        default=True,
+    )
+    parser.add_argument(
         "--global_readout_hidden_dim",
         type=int,
         default=256,

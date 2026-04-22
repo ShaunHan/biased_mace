@@ -82,6 +82,7 @@ class MACE(torch.nn.Module):
         readout_cls: Optional[Type[NonLinearReadoutBlock]] = NonLinearReadoutBlock,
         keep_last_layer_irreps: bool = False,
         use_global_readout: bool = False,
+        global_readout_from_invariants_only: bool = True,
         global_readout_hidden_dim: int = 128,
         global_readout_descriptor_dim: int = 128,
         global_readout_depth: int = 2,
@@ -290,6 +291,7 @@ class MACE(torch.nn.Module):
                 depth=global_readout_depth,
                 num_heads=global_readout_heads,
                 dropout=global_readout_dropout,
+                invariants_only=global_readout_from_invariants_only,
             )
 
     def forward(
@@ -480,6 +482,7 @@ class ScaleShiftMACE(MACE):
         atomic_inter_scale: float,
         atomic_inter_shift: float,
         use_global_readout: bool = False,
+        global_readout_from_invariants_only: bool = True,
         global_readout_hidden_dim: int = 128,
         global_readout_descriptor_dim: int = 128,
         global_readout_depth: int = 2,
@@ -489,6 +492,7 @@ class ScaleShiftMACE(MACE):
     ):
         super().__init__(
             use_global_readout=use_global_readout,
+            global_readout_from_invariants_only=global_readout_from_invariants_only,
             global_readout_hidden_dim=global_readout_hidden_dim,
             global_readout_descriptor_dim=global_readout_descriptor_dim,
             global_readout_depth=global_readout_depth,

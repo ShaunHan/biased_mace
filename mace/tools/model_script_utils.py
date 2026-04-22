@@ -125,6 +125,7 @@ def configure_model(
             args.model = "FoundationMACE"
         model_config_foundation["heads"] = heads
         model_config_foundation["use_global_readout"] = args.use_global_readout
+        model_config_foundation["global_readout_from_invariants_only"] = args.global_readout_from_invariants_only
         model_config_foundation["global_readout_hidden_dim"] = args.global_readout_hidden_dim
         model_config_foundation["global_readout_descriptor_dim"] = args.global_readout_descriptor_dim
         model_config_foundation["global_readout_depth"] = args.global_readout_depth
@@ -270,6 +271,7 @@ def _build_model(
             use_last_readout_only=args.use_last_readout_only,
             use_agnostic_product=args.use_agnostic_product,
             use_global_readout=args.use_global_readout,
+            global_readout_from_invariants_only=args.global_readout_from_invariants_only,
             global_readout_hidden_dim=args.global_readout_hidden_dim,
             global_readout_descriptor_dim=args.global_readout_descriptor_dim,
             global_readout_depth=args.global_readout_depth,
