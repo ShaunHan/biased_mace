@@ -283,6 +283,7 @@ class MACE(torch.nn.Module):
                 )
 
         self.use_global_readout = use_global_readout
+        self.global_readout_from_invariants_only = global_readout_from_invariants_only
 
         if self.use_global_readout:
             global_irreps_out = o3.Irreps(str(self.products[0].linear.irreps_out))
