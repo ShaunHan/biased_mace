@@ -39,6 +39,7 @@ from .utils import (
     get_outputs,
     get_symmetric_displacement,
     prepare_graph,
+    extract_invariant,
 )
 from .global_readout import GlobalReadoutBlock
 
@@ -282,8 +283,23 @@ class MACE(torch.nn.Module):
                 )
 
         self.use_global_readout = use_global_readout
-        if getattr(self, "use_global_readout", False):
-            global_input_dim = int(sum(prod.linear.irreps_out.dim for prod in self.products))
+
+        if self.use_global_readout:
+            global_irreps_out = o3.Irreps(str(self.products[0].linear.irreps_out))
+            self.global_readout_l_max = global_irreps_out.lmax
+            self.global_readout_num_invariant_features = (
+                global_irreps_out.dim // (self.global_readout_l_max + 1) ** 2
+            )
+ 
+            if self.global_readout_from_invariants_only:
+                global_input_dim = int(self.num_interactions) * int(
+                    self.global_readout_num_invariant_features
+                )
+            else:
+                global_input_dim = int(
+                    sum(prod.linear.irreps_out.dim for prod in self.products)
+                )
+ 
             self.global_readout = GlobalReadoutBlock(
                 input_dim=global_input_dim,
                 hidden_dim=global_readout_hidden_dim,
@@ -291,7 +307,6 @@ class MACE(torch.nn.Module):
                 depth=global_readout_depth,
                 num_heads=global_readout_heads,
                 dropout=global_readout_dropout,
-                invariants_only=global_readout_from_invariants_only,
             )
 
     def forward(
@@ -419,9 +434,20 @@ class MACE(torch.nn.Module):
 
         global_descriptor = None
         global_energy = torch.zeros_like(e0)
+ 
         if getattr(self, "use_global_readout", False):
+            global_node_feats = node_feats_out
+ 
+            if self.global_readout_from_invariants_only:
+                global_node_feats = extract_invariant(
+                    node_feats_out,
+                    num_layers=int(self.num_interactions),
+                    num_features=int(self.global_readout_num_invariant_features),
+                    l_max=int(self.global_readout_l_max),
+                )
+ 
             global_descriptor, global_energy = self.global_readout(
-                node_feats_out,
+                global_node_feats,
                 batch=data["batch"],
                 node_mask=global_descriptor_mask,
             )
@@ -631,9 +657,20 @@ class ScaleShiftMACE(MACE):
 
         global_descriptor = None
         global_energy = torch.zeros_like(inter_e)
+ 
         if getattr(self, "use_global_readout", False):
+            global_node_feats = node_feats_out
+ 
+            if self.global_readout_from_invariants_only:
+                global_node_feats = extract_invariant(
+                    node_feats_out,
+                    num_layers=int(self.num_interactions),
+                    num_features=int(self.global_readout_num_invariant_features),
+                    l_max=int(self.global_readout_l_max),
+                )
+ 
             global_descriptor, global_energy = self.global_readout(
-                node_feats_out,
+                global_node_feats,
                 batch=data["batch"],
                 node_mask=global_descriptor_mask,
             )

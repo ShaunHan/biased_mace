@@ -16,7 +16,6 @@ class GlobalReadoutBlock(nn.Module):
         depth: int = 2,
         num_heads: int = 8,
         dropout: float = 0.0,
-        invariants_only: bool = True,
     ):
         super().__init__()
         self.input_dim = int(input_dim)
@@ -25,7 +24,6 @@ class GlobalReadoutBlock(nn.Module):
         self.depth = int(depth)
         self.num_heads = int(num_heads)
         self.dropout = float(dropout)
-        self.invariants_only = bool(invariants_only)
 
         self.input_norm = nn.LayerNorm(self.input_dim)
         self.input_proj = nn.Sequential(
