@@ -304,10 +304,7 @@ class MACE(torch.nn.Module):
                 )
             elif self.global_readout_from_equivariants_contraction:
                 global_input_dim = int(
-                    sum(
-                        o3.Irreps(str(irreps)).filter(o3.Irrep("0e")).dim
-                        for irreps in self.global_readout_irreps
-                    )
+                    sum(cg_contracted_dim(irreps) for irreps in self.global_readout_irreps)
                 )
             else:
                 global_input_dim = int(

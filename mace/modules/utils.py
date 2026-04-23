@@ -309,6 +309,12 @@ def _cg_scalar_square(irreps_str: str) -> o3.TensorSquare:
     )
 
 
+def cg_contracted_dim(irreps: o3.Irreps) -> int:
+    tp = o3.TensorSquare(irreps, filter_ir_out=(o3.Irrep(0, 1),))
+    dummy = torch.zeros(1, irreps.dim)
+    return tp(dummy).shape[-1]
+
+
 def contract_equivariant(
     x: torch.Tensor,
     irreps_list: List[o3.Irreps],
