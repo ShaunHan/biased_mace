@@ -41,6 +41,7 @@ from .utils import (
     prepare_graph,
     extract_invariant,
     contract_equivariant,
+    cg_contracted_dim,
 )
 from .global_readout import GlobalReadoutBlock
 
