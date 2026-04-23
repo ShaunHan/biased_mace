@@ -690,7 +690,7 @@ class ScaleShiftMACE(MACE):
                     l_max=int(self.global_readout_l_max),
                 )
             elif self.global_readout_from_equivariants_contraction:
-                global_node_feats = contract_equivariant_node_features(
+                global_node_feats = contract_equivariant(
                     node_feats_out,
                     self.global_readout_irreps,
                 )
