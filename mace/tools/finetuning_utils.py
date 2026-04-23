@@ -290,7 +290,7 @@ def load_foundations_elements(
                         readout.linear_2.bias = torch.nn.Parameter(
                             model_readouts_one_linear_2_bias
                         )
-    _handled_attrs = {"interactions", "products", "readouts", "global_readout"}
+    _handled_attrs = {"interactions", "products", "readouts", "global_readout", "global_readout_contractors"}
     for attr_name, module in model.named_children():
         if attr_name in _handled_attrs:
             continue
