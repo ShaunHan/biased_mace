@@ -6,6 +6,7 @@
 
 import logging
 from typing import Dict, List, NamedTuple, Optional, Tuple
+from functools import lru_cache
 
 import numpy as np
 from e3nn import o3
@@ -300,48 +301,65 @@ def extract_invariant(x: torch.Tensor, num_layers: int, num_features: int, l_max
     return torch.cat(out, dim=-1)
 
 
+@lru_cache(maxsize=None)
+def _cg_scalar_square(irreps_str: str) -> o3.TensorSquare:
+    return o3.TensorSquare(
+        o3.Irreps(irreps_str),
+        filter_ir_out=(o3.Irrep("0e"),),
+    )
+
+
 def contract_equivariant(
-    node_feats: torch.Tensor,
-    irreps_list: list[o3.Irreps],
+    x: torch.Tensor,
+    irreps_list: List[o3.Irreps],
+    mode: str = "cg",
 ) -> torch.Tensor:
     """
-    Turn concatenated equivariant node features into rotation-invariant scalars
-    by self-contracting each non-scalar irreps block.
+    Convert concatenated equivariant node features into rotation-invariant scalars.
 
-    For each irrep block:
-      - l = 0: keep as-is
-      - l > 0: reshape to [num_nodes, mul, 2l+1] and compute
-        sum_m x[..., m]^2  (one invariant per multiplicity channel)
+    mode="cg":
+        Use e3nn TensorSquare and keep only 0e outputs.
+    mode="self_dot":
+        Use per-multiplicity self dot products.
 
-    This is rotationally invariant because each l-block transforms by an
-    orthogonal Wigner-D matrix, and the self dot-product is preserved.
     """
-    if node_feats.dim() != 2:
-        node_feats = node_feats.reshape(node_feats.shape[0], -1)
+    if x.dim() != 2:
+        x = x.reshape(x.shape[0], -1)
 
     outs = []
     start = 0
 
     for irreps in irreps_list:
-        for mul, ir in irreps:
-            block_dim = mul * ir.dim
-            block = node_feats[:, start : start + block_dim]
-            start += block_dim
+        block = x[:, start : start + irreps.dim]
+        start += irreps.dim
 
-            if ir.l == 0:
-                outs.append(block)
-            else:
-                block = block.view(node_feats.shape[0], mul, ir.dim)
-                inv = torch.sum(block * block, dim=-1)  # [N, mul]
-                outs.append(inv)
+        if mode == "cg":
+            outs.append(_cg_scalar_square(str(irreps))(block))
 
-    if start != node_feats.shape[-1]:
+        elif mode == "self_dot":
+            block_outs = []
+            offset = 0
+            for mul, ir in irreps:
+                dim = mul * ir.dim
+                part = block[:, offset : offset + dim].reshape(x.shape[0], mul, ir.dim)
+                offset += dim
+
+                if ir.l == 0:
+                    block_outs.append(part.reshape(x.shape[0], mul))
+                else:
+                    block_outs.append(torch.sum(part * part, dim=-1))
+
+            outs.append(torch.cat(block_outs, dim=-1) if block_outs else block)
+
+        else:
+            raise ValueError(f"Unknown mode={mode!r}. Use 'cg' or 'self_dot'.")
+
+    if start != x.shape[-1]:
         raise RuntimeError(
-            f"contract_equivariant_node_features consumed {start} features, "
-            f"but node_feats has dim {node_feats.shape[-1]}"
+            f"contract_equivariant consumed {start} features, but x has dim {x.shape[-1]}"
         )
 
-    return torch.cat(outs, dim=-1)
+    return torch.cat(outs, dim=-1) if outs else x.new_zeros((x.shape[0], 0))
 
 
 def compute_mean_std_atomic_inter_energy(

@@ -305,7 +305,7 @@ class MACE(torch.nn.Module):
             elif self.global_readout_from_equivariants_contraction:
                 global_input_dim = int(
                     sum(
-                        sum(mul for mul, _ir in irreps)
+                        o3.Irreps(str(irreps)).filter(o3.Irrep("0e")).dim
                         for irreps in self.global_readout_irreps
                     )
                 )
@@ -463,8 +463,8 @@ class MACE(torch.nn.Module):
                 global_node_feats = contract_equivariant(
                     node_feats_out,
                     self.global_readout_irreps,
+                    mode="cg",
                 )
- 
             global_descriptor, global_energy = self.global_readout(
                 global_node_feats,
                 batch=data["batch"],
@@ -693,8 +693,8 @@ class ScaleShiftMACE(MACE):
                 global_node_feats = contract_equivariant(
                     node_feats_out,
                     self.global_readout_irreps,
+                    mode="cg",
                 )
- 
             global_descriptor, global_energy = self.global_readout(
                 global_node_feats,
                 batch=data["batch"],
