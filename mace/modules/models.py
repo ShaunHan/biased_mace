@@ -40,6 +40,7 @@ from .utils import (
     get_symmetric_displacement,
     prepare_graph,
     extract_invariant,
+    contract_equivariant,
 )
 from .global_readout import GlobalReadoutBlock
 
@@ -83,7 +84,8 @@ class MACE(torch.nn.Module):
         readout_cls: Optional[Type[NonLinearReadoutBlock]] = NonLinearReadoutBlock,
         keep_last_layer_irreps: bool = False,
         use_global_readout: bool = False,
-        global_readout_from_invariants_only: bool = True,
+        global_readout_from_invariants_only: bool = False,
+        global_readout_from_equivariants_contraction: bool = True,
         global_readout_hidden_dim: int = 128,
         global_readout_descriptor_dim: int = 128,
         global_readout_depth: int = 2,
@@ -284,23 +286,34 @@ class MACE(torch.nn.Module):
 
         self.use_global_readout = use_global_readout
         self.global_readout_from_invariants_only = global_readout_from_invariants_only
+        self.global_readout_from_equivariants_contraction = (
+            global_readout_from_equivariants_contraction
+        )
 
+        self.global_readout_irreps = [prod.linear.irreps_out for prod in self.products]
         if self.use_global_readout:
             global_irreps_out = o3.Irreps(str(self.products[0].linear.irreps_out))
             self.global_readout_l_max = global_irreps_out.lmax
             self.global_readout_num_invariant_features = (
                 global_irreps_out.dim // (self.global_readout_l_max + 1) ** 2
             )
- 
+
             if self.global_readout_from_invariants_only:
                 global_input_dim = int(self.num_interactions) * int(
                     self.global_readout_num_invariant_features
+                )
+            elif self.global_readout_from_equivariants_contraction:
+                global_input_dim = int(
+                    sum(
+                        sum(mul for mul, _ir in irreps)
+                        for irreps in self.global_readout_irreps
+                    )
                 )
             else:
                 global_input_dim = int(
                     sum(prod.linear.irreps_out.dim for prod in self.products)
                 )
- 
+
             self.global_readout = GlobalReadoutBlock(
                 input_dim=global_input_dim,
                 hidden_dim=global_readout_hidden_dim,
@@ -446,6 +459,11 @@ class MACE(torch.nn.Module):
                     num_features=int(self.global_readout_num_invariant_features),
                     l_max=int(self.global_readout_l_max),
                 )
+            elif self.global_readout_from_equivariants_contraction:
+                global_node_feats = contract_equivariant(
+                    node_feats_out,
+                    self.global_readout_irreps,
+                )
  
             global_descriptor, global_energy = self.global_readout(
                 global_node_feats,
@@ -509,7 +527,8 @@ class ScaleShiftMACE(MACE):
         atomic_inter_scale: float,
         atomic_inter_shift: float,
         use_global_readout: bool = False,
-        global_readout_from_invariants_only: bool = True,
+        global_readout_from_invariants_only: bool = False,
+        global_readout_from_equivariants_contraction: bool = True,
         global_readout_hidden_dim: int = 128,
         global_readout_descriptor_dim: int = 128,
         global_readout_depth: int = 2,
@@ -520,6 +539,7 @@ class ScaleShiftMACE(MACE):
         super().__init__(
             use_global_readout=use_global_readout,
             global_readout_from_invariants_only=global_readout_from_invariants_only,
+            global_readout_from_equivariants_contraction=global_readout_from_equivariants_contraction,
             global_readout_hidden_dim=global_readout_hidden_dim,
             global_readout_descriptor_dim=global_readout_descriptor_dim,
             global_readout_depth=global_readout_depth,
@@ -668,6 +688,11 @@ class ScaleShiftMACE(MACE):
                     num_layers=int(self.num_interactions),
                     num_features=int(self.global_readout_num_invariant_features),
                     l_max=int(self.global_readout_l_max),
+                )
+            elif self.global_readout_from_equivariants_contraction:
+                global_node_feats = contract_equivariant_node_features(
+                    node_feats_out,
+                    self.global_readout_irreps,
                 )
  
             global_descriptor, global_energy = self.global_readout(

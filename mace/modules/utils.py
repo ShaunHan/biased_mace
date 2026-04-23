@@ -8,6 +8,7 @@ import logging
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
+from e3nn import o3
 import torch
 import torch.utils.data
 from scipy.constants import c, e
@@ -297,6 +298,50 @@ def extract_invariant(x: torch.Tensor, num_layers: int, num_features: int, l_max
             ]
         )
     return torch.cat(out, dim=-1)
+
+
+def contract_equivariant(
+    node_feats: torch.Tensor,
+    irreps_list: list[o3.Irreps],
+) -> torch.Tensor:
+    """
+    Turn concatenated equivariant node features into rotation-invariant scalars
+    by self-contracting each non-scalar irreps block.
+
+    For each irrep block:
+      - l = 0: keep as-is
+      - l > 0: reshape to [num_nodes, mul, 2l+1] and compute
+        sum_m x[..., m]^2  (one invariant per multiplicity channel)
+
+    This is rotationally invariant because each l-block transforms by an
+    orthogonal Wigner-D matrix, and the self dot-product is preserved.
+    """
+    if node_feats.dim() != 2:
+        node_feats = node_feats.reshape(node_feats.shape[0], -1)
+
+    outs = []
+    start = 0
+
+    for irreps in irreps_list:
+        for mul, ir in irreps:
+            block_dim = mul * ir.dim
+            block = node_feats[:, start : start + block_dim]
+            start += block_dim
+
+            if ir.l == 0:
+                outs.append(block)
+            else:
+                block = block.view(node_feats.shape[0], mul, ir.dim)
+                inv = torch.sum(block * block, dim=-1)  # [N, mul]
+                outs.append(inv)
+
+    if start != node_feats.shape[-1]:
+        raise RuntimeError(
+            f"contract_equivariant_node_features consumed {start} features, "
+            f"but node_feats has dim {node_feats.shape[-1]}"
+        )
+
+    return torch.cat(outs, dim=-1)
 
 
 def compute_mean_std_atomic_inter_energy(

@@ -1103,6 +1103,12 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         "--global_readout_from_invariants_only",
         type=str2bool,
         help="whether to only extract invariant node features for global readout",
+        default=False,
+    )
+    parser.add_argument(
+        "--global_readout_from_equivariants_contraction",
+        type=str2bool,
+        help="whether to contract equivariant node features to be rotationally-invariant for global readout",
         default=True,
     )
     parser.add_argument(

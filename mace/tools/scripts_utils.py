@@ -300,7 +300,10 @@ def extract_config_mace_model(model: torch.nn.Module) -> Dict[str, Any]:
         "use_embedding_readout": (hasattr(model, "embedding_readout")),
         "use_global_readout": hasattr(model, "global_readout"),
         "global_readout_from_invariants_only": getattr(
-            model, "global_readout_from_invariants_only", True
+            model, "global_readout_from_invariants_only", False
+        ),
+        "global_readout_from_equivariants_contraction": getattr(
+            model, "global_readout_from_equivariants_contraction", True
         ),
         "global_readout_hidden_dim": getattr(model.global_readout, "hidden_dim", None)
             if hasattr(model, "global_readout")
