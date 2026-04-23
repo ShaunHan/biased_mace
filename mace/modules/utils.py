@@ -309,8 +309,32 @@ def _cg_scalar_square(irreps_str: str) -> o3.TensorSquare:
     )
 
 
-def cg_contracted_dim(irreps: o3.Irreps) -> int:
-    tp = o3.TensorSquare(irreps, filter_ir_out=(o3.Irrep(0, 1),))
+@lru_cache(maxsize=None)
+def cg_contracted_dim(irreps_like) -> int:
+    """
+    Return output dimension of CG scalar contraction using e3nn TensorSquare.
+
+    Accepts:
+      - o3.Irreps
+      - string irreps spec
+      - single MulIrrep-like object (has .mul and .ir)
+      - tuple/list like (mul, ir)
+
+    Keeps only 0e outputs (rotationally invariant scalars).
+    """
+    if isinstance(irreps_like, o3.Irreps):
+        irreps = irreps_like
+    elif hasattr(irreps_like, "mul") and hasattr(irreps_like, "ir"):
+        irreps = o3.Irreps([(irreps_like.mul, irreps_like.ir)])
+    elif isinstance(irreps_like, (tuple, list)) and len(irreps_like) == 2:
+        irreps = o3.Irreps([tuple(irreps_like)])
+    else:
+        irreps = o3.Irreps(irreps_like)
+
+    tp = o3.TensorSquare(
+        irreps,
+        filter_ir_out=(o3.Irrep(0, 1),),   # same as "0e"
+    )
     dummy = torch.zeros(1, irreps.dim)
     return tp(dummy).shape[-1]
 
