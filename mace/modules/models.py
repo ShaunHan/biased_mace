@@ -41,7 +41,7 @@ from .utils import (
     prepare_graph,
     extract_invariant,
 )
-from .global_readout import GlobalReadoutBlock
+from .global_readout import EquivariantScalarContraction, GlobalReadoutBlock
 
 
 @compile_mode("script")
@@ -84,7 +84,6 @@ class MACE(torch.nn.Module):
         keep_last_layer_irreps: bool = False,
         use_global_readout: bool = False,
         global_readout_from_invariants_only: bool = False,
-        global_readout_from_equivariants_contraction: bool = True,
         global_readout_hidden_dim: int = 128,
         global_readout_descriptor_dim: int = 128,
         global_readout_depth: int = 2,
@@ -285,10 +284,6 @@ class MACE(torch.nn.Module):
 
         self.use_global_readout = use_global_readout
         self.global_readout_from_invariants_only = global_readout_from_invariants_only
-        self.global_readout_from_equivariants_contraction = (
-            global_readout_from_equivariants_contraction
-        )
-
         self.global_readout_irreps = [prod.linear.irreps_out for prod in self.products]
         if self.use_global_readout:
             global_irreps_out = o3.Irreps(str(self.products[0].linear.irreps_out))
@@ -297,27 +292,17 @@ class MACE(torch.nn.Module):
                 global_irreps_out.dim // (self.global_readout_l_max + 1) ** 2
             )
 
+            graph_input_dim = 0
             if self.global_readout_from_invariants_only:
                 global_input_dim = int(self.num_interactions) * int(
                     self.global_readout_num_invariant_features
                 )
-            elif self.global_readout_from_equivariants_contraction:
-                self.global_readout_contractors = torch.nn.ModuleList(
-                    [
-                        o3.TensorSquare(
-                            o3.Irreps(str(irreps)),
-                            filter_ir_out=[o3.Irrep("0e")],
-                        )
-                        for irreps in self.global_readout_irreps
-                    ]
-                )
-                global_input_dim = int(
-                    sum(tp.irreps_out.dim for tp in self.global_readout_contractors)
-                )
             else:
-                global_input_dim = int(
-                    sum(prod.linear.irreps_out.dim for prod in self.products)
+                self.global_readout_contractor = EquivariantScalarContraction(
+                    self.global_readout_irreps
                 )
+                global_input_dim = self.global_readout_contractor.node_output_dim
+                graph_input_dim = self.global_readout_contractor.graph_output_dim
 
             self.global_readout = GlobalReadoutBlock(
                 input_dim=global_input_dim,
@@ -326,6 +311,7 @@ class MACE(torch.nn.Module):
                 depth=global_readout_depth,
                 num_heads=global_readout_heads,
                 dropout=global_readout_dropout,
+                graph_input_dim=graph_input_dim,
             )
 
     def forward(
@@ -457,6 +443,7 @@ class MACE(torch.nn.Module):
         if getattr(self, "use_global_readout", False):
             global_node_feats = node_feats_out
  
+            global_graph_feats = None
             if self.global_readout_from_invariants_only:
                 global_node_feats = extract_invariant(
                     node_feats_out,
@@ -464,19 +451,19 @@ class MACE(torch.nn.Module):
                     num_features=int(self.global_readout_num_invariant_features),
                     l_max=int(self.global_readout_l_max),
                 )
-            elif self.global_readout_from_equivariants_contraction:
-                global_blocks = []
-                start = 0
-                for tp, irreps in zip(self.global_readout_contractors, self.global_readout_irreps):
-                    end = start + o3.Irreps(str(irreps)).dim
-                    global_blocks.append(tp(node_feats_out[:, start:end]))
-                    start = end
-                global_node_feats = torch.cat(global_blocks, dim=-1)
+            else:
+                global_node_feats, global_graph_feats = self.global_readout_contractor(
+                    node_feats_concat,
+                    batch=data["batch"],
+                    node_mask=global_descriptor_mask,
+                    num_graphs=num_graphs,
+                )
 
             global_descriptor, global_energy = self.global_readout(
                 global_node_feats,
                 batch=data["batch"],
                 node_mask=global_descriptor_mask,
+                graph_feats=global_graph_feats,
             )
             energies.append(global_energy)
 
@@ -536,7 +523,6 @@ class ScaleShiftMACE(MACE):
         atomic_inter_shift: float,
         use_global_readout: bool = False,
         global_readout_from_invariants_only: bool = False,
-        global_readout_from_equivariants_contraction: bool = True,
         global_readout_hidden_dim: int = 128,
         global_readout_descriptor_dim: int = 128,
         global_readout_depth: int = 2,
@@ -547,7 +533,6 @@ class ScaleShiftMACE(MACE):
         super().__init__(
             use_global_readout=use_global_readout,
             global_readout_from_invariants_only=global_readout_from_invariants_only,
-            global_readout_from_equivariants_contraction=global_readout_from_equivariants_contraction,
             global_readout_hidden_dim=global_readout_hidden_dim,
             global_readout_descriptor_dim=global_readout_descriptor_dim,
             global_readout_depth=global_readout_depth,
@@ -690,6 +675,7 @@ class ScaleShiftMACE(MACE):
         if getattr(self, "use_global_readout", False):
             global_node_feats = node_feats_out
  
+            global_graph_feats = None
             if self.global_readout_from_invariants_only:
                 global_node_feats = extract_invariant(
                     node_feats_out,
@@ -697,19 +683,19 @@ class ScaleShiftMACE(MACE):
                     num_features=int(self.global_readout_num_invariant_features),
                     l_max=int(self.global_readout_l_max),
                 )
-            elif self.global_readout_from_equivariants_contraction:
-                global_blocks = []
-                start = 0
-                for tp, irreps in zip(self.global_readout_contractors, self.global_readout_irreps):
-                    end = start + o3.Irreps(str(irreps)).dim
-                    global_blocks.append(tp(node_feats_out[:, start:end]))
-                    start = end
-                global_node_feats = torch.cat(global_blocks, dim=-1)
+            else:
+                global_node_feats, global_graph_feats = self.global_readout_contractor(
+                    node_feats_list,
+                    batch=data["batch"],
+                    node_mask=global_descriptor_mask,
+                    num_graphs=num_graphs,
+                )
 
             global_descriptor, global_energy = self.global_readout(
                 global_node_feats,
                 batch=data["batch"],
                 node_mask=global_descriptor_mask,
+                graph_feats=global_graph_feats,
             )
             inter_e += global_energy
 
