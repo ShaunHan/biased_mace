@@ -292,7 +292,6 @@ class MACE(torch.nn.Module):
                 global_irreps_out.dim // (self.global_readout_l_max + 1) ** 2
             )
 
-            graph_input_dim = 0
             if self.global_readout_from_invariants_only:
                 global_input_dim = int(self.num_interactions) * int(
                     self.global_readout_num_invariant_features
@@ -302,7 +301,6 @@ class MACE(torch.nn.Module):
                     self.global_readout_irreps
                 )
                 global_input_dim = self.global_readout_contractor.node_output_dim
-                graph_input_dim = self.global_readout_contractor.graph_output_dim
 
             self.global_readout = GlobalReadoutBlock(
                 input_dim=global_input_dim,
@@ -311,7 +309,6 @@ class MACE(torch.nn.Module):
                 depth=global_readout_depth,
                 num_heads=global_readout_heads,
                 dropout=global_readout_dropout,
-                graph_input_dim=graph_input_dim,
             )
 
     def forward(
@@ -443,7 +440,6 @@ class MACE(torch.nn.Module):
         if getattr(self, "use_global_readout", False):
             global_node_feats = node_feats_out
  
-            global_graph_feats = None
             if self.global_readout_from_invariants_only:
                 global_node_feats = extract_invariant(
                     node_feats_out,
@@ -452,7 +448,7 @@ class MACE(torch.nn.Module):
                     l_max=int(self.global_readout_l_max),
                 )
             else:
-                global_node_feats, global_graph_feats = self.global_readout_contractor(
+                global_node_feats = self.global_readout_contractor(
                     node_feats_concat,
                     batch=data["batch"],
                     node_mask=global_descriptor_mask,
@@ -463,7 +459,6 @@ class MACE(torch.nn.Module):
                 global_node_feats,
                 batch=data["batch"],
                 node_mask=global_descriptor_mask,
-                graph_feats=global_graph_feats,
             )
             energies.append(global_energy)
 
@@ -675,7 +670,6 @@ class ScaleShiftMACE(MACE):
         if getattr(self, "use_global_readout", False):
             global_node_feats = node_feats_out
  
-            global_graph_feats = None
             if self.global_readout_from_invariants_only:
                 global_node_feats = extract_invariant(
                     node_feats_out,
@@ -684,7 +678,7 @@ class ScaleShiftMACE(MACE):
                     l_max=int(self.global_readout_l_max),
                 )
             else:
-                global_node_feats, global_graph_feats = self.global_readout_contractor(
+                global_node_feats = self.global_readout_contractor(
                     node_feats_list,
                     batch=data["batch"],
                     node_mask=global_descriptor_mask,
@@ -695,7 +689,6 @@ class ScaleShiftMACE(MACE):
                 global_node_feats,
                 batch=data["batch"],
                 node_mask=global_descriptor_mask,
-                graph_feats=global_graph_feats,
             )
             inter_e += global_energy
 
