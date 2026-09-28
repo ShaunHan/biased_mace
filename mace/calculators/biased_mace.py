@@ -14,6 +14,7 @@ from mace.modules.global_descriptor import (
     model_feature_specs,
 )
 from mace.modules.target_bias import (
+    MomentTargetMetric,
     TargetDescriptorMetric,
     biased_autograd,
     target_potential,
@@ -150,13 +151,19 @@ class BiasedMACECalculator(MACECalculator):
                 features[key] = out[key]
         return out, features
 
-    def _segments(self, model_index, features, batch):
-        numbers = self.models[model_index].atomic_numbers[
-            batch["node_attrs"].argmax(-1)
-        ]
-        return self._descriptors[model_index].segments(
-            features, numbers, batch["batch"]
-        )
+    def _groups_for_atoms(self, atoms):
+        if self._group_numbers is None or not np.array_equal(
+            atoms.numbers, self._group_numbers
+        ):
+            self._group_numbers = atoms.numbers.copy()
+            self._current_groups = self._descriptors[0].atom_groups(
+                atoms.numbers, device=self.device
+            )
+        return self._current_groups
+
+    def _clone_batch(self, batch):
+        # A fresh, unpadded eager graph has exactly one consumer in this case.
+        return batch if self.num_models == 1 else super()._clone_batch(batch)
 
     def set_target(self, target_atoms, reference_atoms=None):
         """Copy target and freeze the metric. This defines a NEW bias protocol."""
@@ -176,6 +183,9 @@ class BiasedMACECalculator(MACECalculator):
             for m in self.models
         ]
         self._metrics = []
+        self._moment_metrics = []
+        self._group_numbers = None
+        self._last_context = None
         self._reference_contexts = []
         self.target_energy = 0.0
         with torch.enable_grad(), torch_tools.default_dtype(self.default_dtype):
@@ -191,7 +201,13 @@ class BiasedMACECalculator(MACECalculator):
                         "training": False,
                     },
                 )
-                target = [t.detach() for t in self._segments(index, features, batch)]
+                with torch.no_grad():
+                    target_moments = self._descriptors[index].moment_factors(
+                        features, self._groups_for_atoms(self._target_atoms)
+                    )
+                    target = self._descriptors[index].segments_from_moments(
+                        target_moments
+                    )
                 target_stats = self._descriptors[index].calibration_statistics(features)
                 reference_stats = target_stats
                 context = {
@@ -205,11 +221,14 @@ class BiasedMACECalculator(MACECalculator):
                     * self.energy_units_to_eV
                     / self.num_models
                 )
+                # Only fixed moments survive calibration. Release the target
+                # forward graph before allocating the reference forward graph.
+                del out, features, batch
                 reference = None
                 if reference_atoms is not None:
                     refbatch = self._prepare_reference(reference_atoms)
                     self._validate_context(index, refbatch)
-                    _, reffeatures = self._evaluate_features(
+                    refout, reffeatures = self._evaluate_features(
                         model,
                         refbatch,
                         {
@@ -219,12 +238,16 @@ class BiasedMACECalculator(MACECalculator):
                             "training": False,
                         },
                     )
-                    reference = [
-                        t.detach() for t in self._segments(index, reffeatures, refbatch)
-                    ]
+                    with torch.no_grad():
+                        reference = self._descriptors[index].segments_from_moments(
+                            self._descriptors[index].moment_factors(
+                                reffeatures, self._groups_for_atoms(reference_atoms)
+                            )
+                        )
                     reference_stats = self._descriptors[index].calibration_statistics(
                         reffeatures
                     )
+                    del refout, reffeatures, refbatch
                 scales = []
                 for (power_t, order), (power_r, _) in zip(
                     target_stats, reference_stats
@@ -237,7 +260,11 @@ class BiasedMACECalculator(MACECalculator):
                         torch.ones_like(sigma),
                     )
                     scales.append(sigma**order)
-                self._metrics.append(TargetDescriptorMetric(target, reference, scales))
+                metric = TargetDescriptorMetric(target, reference, scales)
+                self._metrics.append(metric)
+                self._moment_metrics.append(
+                    MomentTargetMetric(target_moments[0], metric)
+                )
         self._normalized_reference = reference_atoms is not None
         if self._automatic:
             self._hop_ready = False
@@ -288,7 +315,8 @@ class BiasedMACECalculator(MACECalculator):
 
     def _model_forward(self, model, batch_dict, model_kwargs):
         index = next(i for i, candidate in enumerate(self.models) if candidate is model)
-        self._validate_context(index, batch_dict)
+        if not self._context_unchanged:
+            self._validate_context(index, batch_dict)
         positions = batch_dict["positions"]
         positions.requires_grad_(True)
         cell = batch_dict["cell"]
@@ -305,8 +333,17 @@ class BiasedMACECalculator(MACECalculator):
         )
         with torch.enable_grad():
             out, features = self._evaluate_features(model, batch_dict, kwargs)
-            descriptor = torch.cat(self._segments(index, features, batch_dict), dim=-1)
-            distance_squared = self._metrics[index](descriptor)
+            moments = self._descriptors[index].moment_factors(
+                features, self._current_groups
+            )
+            descriptor = None
+            if self.store_descriptor or not self._moment_metrics[index].compatible:
+                descriptor = torch.cat(
+                    self._descriptors[index].segments_from_moments(moments), dim=-1
+                )
+                distance_squared = self._metrics[index](descriptor)
+            else:
+                distance_squared = self._moment_metrics[index](moments)
             unit = target_potential(distance_squared)
             physical_energy = out["energy"]
             total, forces, stress, virials = biased_autograd(
@@ -321,14 +358,15 @@ class BiasedMACECalculator(MACECalculator):
         out = dict(out, energy=total, forces=forces, stress=stress, virials=virials)
         self._bias_records.append(
             {
-                "unbiased_energy": physical_energy.detach().sum().item()
-                * self.energy_units_to_eV,
-                "unit_bias_energy": unit.detach().sum().item(),
-                "bias_distance_squared": distance_squared.detach().sum().item(),
-                **(
-                    {"global_descriptor": descriptor.detach().cpu().numpy()[0]}
-                    if self.store_descriptor
-                    else {}
+                "values": torch.stack(
+                    [
+                        physical_energy.detach().sum() * self.energy_units_to_eV,
+                        unit.detach().sum(),
+                        distance_squared.detach().sum(),
+                    ]
+                ),
+                "global_descriptor": (
+                    descriptor.detach() if self.store_descriptor else None
                 ),
             }
         )
@@ -341,15 +379,27 @@ class BiasedMACECalculator(MACECalculator):
             )
         atoms = self.atoms if atoms is None else atoms
         self._validate_structure(atoms)
+        self._groups_for_atoms(atoms)
+        context = {
+            **{("info", k): atoms.info.get(k) for k in self.info_keys.values()},
+            **{("arrays", k): atoms.arrays.get(k) for k in self.arrays_keys.values()},
+            ("calculator", "external_field"): self.external_field,
+        }
+        self._context_unchanged = self._last_context is not None and all(
+            k in self._last_context and np.array_equal(v, self._last_context[k])
+            for k, v in context.items()
+        )
         self._bias_records = []
         with torch.enable_grad():
             super().calculate(atoms, properties, system_changes)
-        for key in (
-            "unbiased_energy",
-            "unit_bias_energy",
-            "bias_distance_squared",
+        self._last_context = deepcopy(context)
+        values = (
+            torch.stack([r["values"] for r in self._bias_records]).mean(0).cpu().numpy()
+        )
+        for key, value in zip(
+            ("unbiased_energy", "unit_bias_energy", "bias_distance_squared"), values
         ):
-            self.results[key] = np.mean([r[key] for r in self._bias_records], axis=0)
+            self.results[key] = float(value)
         self.results["bias_distance"] = float(
             np.sqrt(self.results["bias_distance_squared"])
         )
@@ -361,8 +411,9 @@ class BiasedMACECalculator(MACECalculator):
         # Latent coordinates from independently trained models have no shared
         # basis: keep each descriptor separate; average energies, never features.
         if self.store_descriptor:
-            ds = [r["global_descriptor"] for r in self._bias_records]
+            ds = [r["global_descriptor"].cpu().numpy()[0] for r in self._bias_records]
             self.results["global_descriptor"] = ds[0] if self.num_models == 1 else ds
+        self._bias_records.clear()
         self.results.pop("energies", None)
         if "node_energy" in self.results:
             self.results["unbiased_node_energy"] = self.results.pop("node_energy")
@@ -404,6 +455,8 @@ class BiasedMACECalculator(MACECalculator):
             ):
                 raise ValueError("Model/target descriptor differs from restart state")
             metric.load_state_dict(saved)
+        for metric in self._moment_metrics:
+            metric.refresh_scales()
         self.bias_weight = state["bias_weight"]
         weight = float(state["current_bias_weight"])
         if not math.isfinite(weight) or weight < 0:

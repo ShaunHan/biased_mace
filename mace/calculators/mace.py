@@ -556,19 +556,21 @@ class MACECalculator(Calculator):
             if key not in tensor_shapes or out.get(key) is None:
                 continue
             shape = [num_models] + tensor_shapes[key]
-            dict_of_tensors[key] = torch.zeros(
-                *shape,
-                device=self.device,
-                dtype=out[key].dtype,
+            dict_of_tensors[key] = (
+                out[key].detach().reshape(shape)
+                if num_models == 1
+                else torch.zeros(*shape, device=self.device, dtype=out[key].dtype)
             )
 
         for key in ("latent_alphas", "latent_kappas", "BEC"):
             if out.get(key) is not None:
-                dict_of_tensors[key] = torch.zeros(
-                    num_models,
-                    *out[key].shape,
-                    device=self.device,
-                    dtype=out[key].dtype,
+                dict_of_tensors[key] = (
+                    out[key].detach().unsqueeze(0)
+                    if num_models == 1
+                    else torch.zeros(
+                        num_models, *out[key].shape,
+                        device=self.device, dtype=out[key].dtype,
+                    )
                 )
 
         node_e0 = None
@@ -581,11 +583,33 @@ class MACECalculator(Calculator):
                     num_atoms_arange, node_heads
                 ]
                 .detach()
-                .cpu()
-                .numpy()
             )
 
         return dict_of_tensors, node_e0
+
+    @staticmethod
+    def _results_to_cpu(tensors, node_e0):
+        """One device-to-host copy per dtype, rather than per property.
+
+        Packing detached outputs also gives NumPy results their own storage;
+        per-atom energy conversion must not mutate the model's output tensors.
+        """
+        grouped = {}
+        values = dict(tensors)
+        if node_e0 is not None:
+            values["_node_e0"] = node_e0
+        for key, value in values.items():
+            grouped.setdefault((value.device, value.dtype), []).append((key, value))
+        cpu = {}
+        for entries in grouped.values():
+            flat = torch.cat([value.detach().reshape(-1) for _, value in entries]).cpu()
+            offset = 0
+            for key, value in entries:
+                count = value.numel()
+                cpu[key] = flat[offset:offset + count].view(value.shape)
+                offset += count
+        e0 = cpu.pop("_node_e0", None)
+        return cpu, None if e0 is None else e0.numpy()
 
     def _auto_estimate_padding(self, real_num_atoms: int, real_num_edges: int):
         """Set padding targets on first call based on actual graph size."""
@@ -788,9 +812,12 @@ class MACECalculator(Calculator):
                 ret_tensors, node_e0 = self._create_result_tensors(
                     self.num_models, num_real_atoms, batch, out
                 )
-            for key, val in ret_tensors.items():
-                if out.get(key) is not None:
-                    val[i] = out[key].detach()
+            if self.num_models > 1:
+                for key, val in ret_tensors.items():
+                    if out.get(key) is not None:
+                        val[i] = out[key].detach()
+
+        ret_tensors, node_e0 = self._results_to_cpu(ret_tensors, node_e0)
 
         # covert from ret_tensors to calculator results dict
         self.results = {}

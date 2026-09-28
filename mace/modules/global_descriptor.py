@@ -6,6 +6,8 @@ irreps AND memory layout; these are independent pieces of information.
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
+import math
 from typing import Mapping, Sequence
 
 import torch
@@ -91,10 +93,17 @@ def capture_mace_features(model):
             handle.remove()
 
 
+@lru_cache(maxsize=32)
+def _symmetric_indices(size, device, dtype):
+    i, j = torch.triu_indices(size, size, device=device)
+    factor = torch.ones(i.shape, dtype=dtype, device=device)
+    factor[i != j] = math.sqrt(2)
+    return i, j, factor
+
+
 def _symmetric_vector(matrix):
     """sqrt(2) off-diagonals preserve the full Frobenius distance."""
-    i, j = torch.triu_indices(matrix.shape[-1], matrix.shape[-1], device=matrix.device)
-    factor = torch.where(i == j, 1.0, 2.0**0.5).to(matrix)
+    i, j, factor = _symmetric_indices(matrix.shape[-1], matrix.device, matrix.dtype)
     return matrix[..., i, j] * factor
 
 
@@ -120,24 +129,31 @@ class InvariantMomentDescriptor(torch.nn.Module):
             raise ValueError("Nonempty feature specs and species are required")
         if len({s.key for s in self.specs}) != len(self.specs):
             raise ValueError("Feature keys must be unique")
+        self._plans = {}
+        for spec in self.specs:
+            irreps = o3.Irreps(spec.irreps)
+            groups = {}
+            for (mul, ir), sl in zip(irreps, irreps.slices()):
+                groups.setdefault((ir.l, ir.p), []).append((mul, ir.dim, sl))
+            self._plans[spec.key] = (irreps.dim, tuple(groups.items()))
 
-    @staticmethod
-    def _blocks(features, spec):
-        irreps = o3.Irreps(spec.irreps)
+    def _blocks(self, features, spec):
+        size, groups = self._plans[spec.key]
         features = features.reshape(features.shape[0], -1)
-        if features.shape[-1] != irreps.dim:
+        if features.shape[-1] != size:
             raise ValueError(
-                f"{spec.key}: expected {irreps.dim} features, got {features.shape[-1]}"
+                f"{spec.key}: expected {size} features, got {features.shape[-1]}"
             )
-        grouped = {}
-        for (mul, ir), sl in zip(irreps, irreps.slices()):
-            block = features[:, sl]
-            if spec.layout == "mul_ir":
-                block = block.reshape(-1, mul, ir.dim)
-            else:
-                block = block.reshape(-1, ir.dim, mul).transpose(-1, -2)
-            grouped.setdefault((ir.l, ir.p), []).append(block)
-        return [(key, torch.cat(value, dim=1)) for key, value in grouped.items()]
+        for key, entries in groups:
+            blocks = []
+            for mul, dim, sl in entries:
+                block = features[:, sl]
+                if spec.layout == "mul_ir":
+                    block = block.reshape(features.shape[0], mul, dim)
+                else:
+                    block = block.reshape(features.shape[0], dim, mul).transpose(-1, -2)
+                blocks.append(block)
+            yield key, blocks[0] if len(blocks) == 1 else torch.cat(blocks, dim=1)
 
     def calibration_statistics(self, features):
         """Underlying tensor mean squares and moment orders, in segment order.
@@ -157,52 +173,94 @@ class InvariantMomentDescriptor(torch.nn.Module):
                     statistics.append((power, 2))
         return statistics
 
-    def segments(
-        self,
-        features: Mapping[str, torch.Tensor],
-        numbers,
-        batch=None,
-    ):
-        """Return invariant blocks [n_graphs, block_dim] before fixed scaling."""
-        first = features[self.specs[0].key]
-        numbers = torch.as_tensor(numbers, device=first.device, dtype=torch.long)
-        if numbers.ndim != 1 or numbers.numel() != first.shape[0]:
+    def atom_groups(self, numbers, batch=None, device=None):
+        """Build graph/species indices once for a fixed ordered composition.
+
+        ASE supplies numbers on the CPU. Keeping this metadata out of the
+        differentiable forward avoids GPU synchronization on every force call.
+        The general batched API also accepts tensor inputs on any device.
+        """
+        numbers = torch.as_tensor(numbers).detach().to(device="cpu", dtype=torch.long)
+        if numbers.ndim != 1:
             raise ValueError("numbers must give one atomic number per feature row")
         if batch is None:
             batch = torch.zeros_like(numbers)
+        else:
+            batch = torch.as_tensor(batch).detach().to(device="cpu", dtype=torch.long)
         if batch.shape != numbers.shape or batch.numel() == 0:
             raise ValueError("Empty/invalid graph batch")
-        ngraphs = int(batch.max()) + 1
         if set(numbers.tolist()) - set(self.species):
             raise ValueError("A species is outside the fixed descriptor species set")
+        labels = sorted(set(batch.tolist()))
+        if labels != list(range(len(labels))):
+            raise ValueError("Batch graph labels must be contiguous and nonempty")
+        return tuple(
+            tuple(
+                ((batch == graph) & (numbers == z))
+                .nonzero()
+                .flatten()
+                .to(device=device)
+                for z in self.species
+            )
+            for graph in labels
+        )
 
-        pieces_per_graph = []
-        for graph in range(ngraphs):
-            select = batch == graph
-            if not bool(select.any()):
-                raise ValueError("Batch graph labels must be contiguous and nonempty")
-            z = numbers[select]
-            weights = torch.stack([(z == a).to(first) for a in self.species], dim=1)
-            counts = weights.sum(dim=0).clamp_min(1)
-            weights = weights / counts
+    def moment_factors(self, features: Mapping[str, torch.Tensor], groups):
+        """Scalar means and factors X whose Gram matrix X X^T is a moment.
+
+        Factoring does not discard channels or change the descriptor. It lets
+        the target distance avoid constructing large channel-by-channel Grams.
+        """
+        blocks = [
+            item
+            for spec in self.specs
+            for item in self._blocks(features[spec.key], spec)
+        ]
+        graphs = []
+        for graph in groups:
             pieces = []
-            for spec in self.specs:
-                for (ell, parity), block in self._blocks(
-                    features[spec.key][select], spec
-                ):
-                    dim = 2 * ell + 1
-                    mean = torch.einsum("iz,iam->zam", weights, block)
-                    if ell == 0 and parity == 1:
-                        pieces.append(mean.flatten())
-                    local = torch.einsum("iz,iam,ibm->zab", weights, block, block) / dim
-                    pieces.append(_symmetric_vector(local).flatten())
-                    if ell > 0 or parity == -1:
-                        global_tensor = mean.flatten(0, 1)
-                        pieces.append(
-                            _symmetric_vector(global_tensor @ global_tensor.T / dim)
-                        )
-            pieces_per_graph.append(pieces)
-        return [torch.stack(p) for p in zip(*pieces_per_graph)]
+            for (ell, parity), block in blocks:
+                dim, channels = 2 * ell + 1, block.shape[1]
+                means, factors = [], []
+                for indices in graph:
+                    selected = block.index_select(0, indices)
+                    count = indices.numel()
+                    means.append(selected.sum(0) / max(count, 1))
+                    factors.append(
+                        selected.transpose(0, 1).reshape(channels, count * dim)
+                        / math.sqrt(max(count, 1) * dim)
+                    )
+                mean = torch.stack(means)
+                if ell == 0 and parity == 1:
+                    pieces.append(mean.flatten())
+                pieces.append(tuple(factors))
+                if ell > 0 or parity == -1:
+                    pieces.append((mean.flatten(0, 1) / math.sqrt(dim),))
+            graphs.append(pieces)
+        return graphs
+
+    @staticmethod
+    def segments_from_moments(moments):
+        graphs = [
+            [
+                (
+                    part
+                    if torch.is_tensor(part)
+                    else torch.cat([_symmetric_vector(x @ x.T).flatten() for x in part])
+                )
+                for part in graph
+            ]
+            for graph in moments
+        ]
+        return [torch.stack(p) for p in zip(*graphs)]
+
+    def segments(self, features, numbers, batch=None):
+        """Return invariant blocks [n_graphs, block_dim] before fixed scaling."""
+        first = features[self.specs[0].key]
+        if len(numbers) != first.shape[0]:
+            raise ValueError("numbers must give one atomic number per feature row")
+        groups = self.atom_groups(numbers, batch, first.device)
+        return self.segments_from_moments(self.moment_factors(features, groups))
 
     def forward(self, features, numbers, batch=None):
         return torch.cat(self.segments(features, numbers, batch), dim=-1)
