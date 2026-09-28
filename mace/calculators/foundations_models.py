@@ -1,5 +1,7 @@
 import os
+import urllib.parse
 import urllib.request
+import warnings
 from pathlib import Path
 from typing import Any, Literal, Optional, Union, overload
 
@@ -7,40 +9,97 @@ import torch
 from ase import units
 from ase.calculators.mixing import SumCalculator
 
+from mace.tools.deprecation import warn
 from mace.tools.utils import get_cache_dir
 
 from .mace import MACECalculator
 
-
 _DOWNLOAD_TIMEOUT = 120  # seconds – socket-level read timeout for model downloads
 
 
+def _normalize_github_download_url(url: str) -> str:
+    """Prefer raw.githubusercontent.com for GitHub-hosted model files."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc != "github.com":
+        return url
+
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if len(path_parts) < 5:
+        return url
+
+    org, repo, mode = path_parts[:3]
+    if mode not in {"blob", "raw"}:
+        return url
+
+    ref = path_parts[3]
+    file_path = "/".join(path_parts[4:])
+    normalized = f"https://raw.githubusercontent.com/{org}/{repo}/{ref}/{file_path}"
+    if parsed.query and parsed.query != "raw=true":
+        normalized = f"{normalized}?{parsed.query}"
+    return normalized
+
+
+def _discard_cached_download(path):
+    """Remove a just-downloaded file that turned out not to be a checkpoint.
+
+    Only ever called for a path the caller has just created, since every call
+    site is guarded by `if not os.path.isfile(path)`, so this cannot delete a
+    model the user already had.
+    """
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _urlretrieve_with_timeout(url, filename, timeout=_DOWNLOAD_TIMEOUT):
-    """Download *url* to *filename* with a per-read socket timeout."""
-    with urllib.request.urlopen(url, timeout=timeout) as response:
-        total = int(response.headers.get("Content-Length", 0))
-        downloaded = 0
-        block_size = 256 * 1024  # 256 KB
-        info = response.info()
-        with open(filename, "wb") as out:
-            while True:
-                block = response.read(block_size)
-                if not block:
-                    break
-                out.write(block)
-                downloaded += len(block)
-                if total > 0:
-                    pct = min(100, downloaded * 100 / total)
-                    print(
-                        f"\rDownloading: {pct:.1f}% "
-                        f"({downloaded / 1024 / 1024:.1f} MB / "
-                        f"{total / 1024 / 1024:.1f} MB)",
-                        end="",
-                        flush=True,
-                    )
-    if total > 0:
-        print()  # newline after progress
+    """Download *url* to *filename* with a per-read socket timeout.
+
+    Streams to a ``.part`` sibling and atomically renames on success so
+    interrupted downloads never leave a truncated file at *filename* (which
+    would later make ``torch.load`` fail with a confusing zip-archive error).
+    """
+    tmp = filename + ".part"
+    success = False
+    try:
+        with urllib.request.urlopen(
+            _normalize_github_download_url(url), timeout=timeout
+        ) as response:
+            info = response.info()
+            content_type = info.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if content_type == "text/html":
+                raise RuntimeError(f"Model download failed, please check the URL {url}")
+            total = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            block_size = 256 * 1024  # 256 KB
+            with open(tmp, "wb") as out:
+                while True:
+                    block = response.read(block_size)
+                    if not block:
+                        break
+                    out.write(block)
+                    downloaded += len(block)
+                    if total > 0:
+                        pct = min(100, downloaded * 100 / total)
+                        print(
+                            f"\rDownloading: {pct:.1f}% "
+                            f"({downloaded / 1024 / 1024:.1f} MB / "
+                            f"{total / 1024 / 1024:.1f} MB)",
+                            end="",
+                            flush=True,
+                        )
+        os.replace(tmp, filename)
+        success = True
+        if total > 0:
+            print()  # newline after progress
+    finally:
+        if not success:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
     return filename, info
+
 
 module_dir = os.path.dirname(__file__)
 local_model_path = os.path.join(
@@ -67,6 +126,12 @@ mace_mp_urls = {
 }
 mace_mp_names = [None] + list(mace_mp_urls.keys())
 
+mace_off_urls = {
+    "small": "https://raw.githubusercontent.com/ACEsuit/mace-off/main/mace_off23/MACE-OFF23_small.model",
+    "medium": "https://raw.githubusercontent.com/ACEsuit/mace-off/main/mace_off23/MACE-OFF23_medium.model",
+    "large": "https://raw.githubusercontent.com/ACEsuit/mace-off/main/mace_off23/MACE-OFF23_large.model",
+}
+
 polar_model_urls = {
     "polar-1-s": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_polar_1/MACE-POLAR-1-S.model",
     "polar-1-m": "https://github.com/ACEsuit/mace-foundations/releases/download/mace_polar_1/MACE-POLAR-1-M.model",
@@ -77,6 +142,9 @@ polar_model_paths = {
     for key, url in polar_model_urls.items()
 }
 polar_model_names = list(polar_model_paths.keys())
+mace_mdp_default_url = (
+    "https://raw.githubusercontent.com/Nilsgoe/MACE-MDP/main/models/MACE-MDP.model"
+)
 
 
 def download_mace_mp_checkpoint(model: Optional[Union[str, Path]] = None) -> str:
@@ -123,10 +191,14 @@ def download_mace_mp_checkpoint(model: Optional[Union[str, Path]] = None) -> str
     if not os.path.isfile(cached_model_path):
         os.makedirs(cache_dir, exist_ok=True)
         print(f"Downloading MACE model from {checkpoint_url!r}")
-        _, http_msg = _urlretrieve_with_timeout(
-            checkpoint_url, cached_model_path
-        )
+        _, http_msg = _urlretrieve_with_timeout(checkpoint_url, cached_model_path)
         if "Content-Type: text/html" in str(http_msg):
+            # The fetch succeeded at the HTTP layer, so the helper already
+            # renamed the body into place: an error page is now sitting where
+            # the checkpoint belongs. Leaving it there poisons the cache, since
+            # the isfile check above skips the download from then on and
+            # torch.load reports a zip-archive error instead of this one.
+            _discard_cached_download(cached_model_path)
             raise RuntimeError(
                 f"Model download failed, please check the URL {checkpoint_url}"
             )
@@ -167,10 +239,14 @@ def download_mace_polar_checkpoint(model: Union[str, Path]) -> str:
     if not os.path.isfile(cached_model_path):
         os.makedirs(cache_dir, exist_ok=True)
         print(f"Downloading MACE-Polar model from {checkpoint_url!r}")
-        _, http_msg = _urlretrieve_with_timeout(
-            checkpoint_url, cached_model_path
-        )
+        _, http_msg = _urlretrieve_with_timeout(checkpoint_url, cached_model_path)
         if "Content-Type: text/html" in str(http_msg):
+            # The fetch succeeded at the HTTP layer, so the helper already
+            # renamed the body into place: an error page is now sitting where
+            # the checkpoint belongs. Leaving it there poisons the cache, since
+            # the isfile check above skips the download from then on and
+            # torch.load reports a zip-archive error instead of this one.
+            _discard_cached_download(cached_model_path)
             raise RuntimeError(
                 f"Model download failed, please check the URL {checkpoint_url}"
             )
@@ -194,9 +270,10 @@ def mace_mp(
     device: str = "",
     default_dtype: str = "float32",
     dispersion: bool = False,
-    damping: str = "bj",  # choices: ["zero", "bj", "zerom", "bjm"]
+    dispersion_damping: str = "bj",  # choices: ["zero", "bj", "zerom", "bjm"]
     dispersion_xc: str = "pbe",
     dispersion_cutoff: float = 40.0 * units.Bohr,
+    dispersion_coord_cutoff: float = 40.0 * units.Bohr,
     return_raw_model: bool = False,
     **kwargs,
 ) -> Union[MACECalculator, torch.nn.Module, SumCalculator]:
@@ -220,15 +297,25 @@ def mace_mp(
         device (str, optional): Device to use for the model. Defaults to "cuda" if available.
         default_dtype (str, optional): Default dtype for the model. Defaults to "float32".
         dispersion (bool, optional): Whether to use D3 dispersion corrections. Defaults to False.
-        damping (str): The damping function associated with the D3 correction. Defaults to "bj" for D3(BJ).
-        dispersion_xc (str, optional): Exchange-correlation functional for D3 dispersion corrections.
-        dispersion_cutoff (float, optional): Cutoff radius in Bohr for D3 dispersion corrections.
+        dispersion_damping (str): The damping function associated with the D3 correction. Defaults to "bj" for D3(BJ).
+            Also accepted under its former name, "damping".
+        dispersion_xc (str, optional): Exchange-correlation functional for D3 dispersion corrections. Defaults to "pbe"
+        dispersion_cutoff (float, optional): Cutoff radius in D3 dispersion corrections. Defaults to 40 * Bohr
+        dispersion_coord_cutoff (float, optional): Cutoff radius for coordination number in D3 dispersion corrections. Defaults to 40 * Bohr
         return_raw_model (bool, optional): Whether to return the raw model or an ASE calculator. Defaults to False.
         **kwargs: Passed to MACECalculator and TorchDFTD3Calculator.
 
     Returns:
         MACECalculator: trained on the MPtrj dataset (unless model otherwise specified).
     """
+    # "damping" is the released name this argument had before it became
+    # dispersion_damping. It still arrives through **kwargs, which are also
+    # forwarded to TorchDFTD3Calculator, so without this it would collide
+    # with the explicit damping= there and raise a multiple-values TypeError.
+    damping_alias = kwargs.pop("damping", None)
+    if damping_alias is not None:
+        dispersion_damping = damping_alias
+
     try:
         if model in mace_mp_names or str(model).startswith("https:"):
             model_path = download_mace_mp_checkpoint(model)
@@ -271,10 +358,11 @@ def mace_mp(
     dtype = torch.float32 if default_dtype == "float32" else torch.float64
     d3_calc = TorchDFTD3Calculator(
         device=device,
-        damping=damping,
+        damping=dispersion_damping,
         dtype=dtype,
         xc=dispersion_xc,
         cutoff=dispersion_cutoff,
+        cnthr=dispersion_coord_cutoff,
         **kwargs,
     )
 
@@ -342,18 +430,11 @@ def mace_off(
         MACECalculator: trained on the MACE-OFF23 dataset
     """
     try:
-        if model in (None, "small", "medium", "large") or str(model).startswith(
-            "https:"
-        ):
-            urls = dict(
-                small="https://github.com/ACEsuit/mace-off/blob/main/mace_off23/MACE-OFF23_small.model?raw=true",
-                medium="https://github.com/ACEsuit/mace-off/raw/main/mace_off23/MACE-OFF23_medium.model?raw=true",
-                large="https://github.com/ACEsuit/mace-off/blob/main/mace_off23/MACE-OFF23_large.model?raw=true",
-            )
+        if model is None or model in mace_off_urls or str(model).startswith("https:"):
             checkpoint_url = (
-                urls.get(model, urls["medium"])
-                if model in (None, "small", "medium", "large")
-                else model
+                mace_off_urls["medium"]
+                if model is None
+                else mace_off_urls.get(model, model)
             )
             cache_dir = get_cache_dir()
             checkpoint_url_name = os.path.basename(checkpoint_url).split("?")[0]
@@ -422,6 +503,11 @@ def mace_anicc(
         If you are using this function, please cite the relevant paper associated with the MACE model, ANI dataset, and also the following:
         - "Evaluation of the MACE Force Field Architecture by Dávid Péter Kovács, Ilyes Batatia, Eszter Sára Arany, and Gábor Csányi, The Journal of Chemical Physics, 2023, URL: https://doi.org/10.1063/5.0155322
     """
+    # The row for this loader already covers the model and the checkpoint that
+    # go with it, so fm.mace_anicc and pkg.anicc_checkpoint stay table-only.
+    warn("calc.export.mace_anicc")
+    if model_path is not None:
+        warn("kwarg.model_path")
     if model_path is None:
         model_path = os.path.join(
             module_dir, "foundations_models/ani500k_large_CC.model"
@@ -543,4 +629,83 @@ def mace_omol(
         default_dtype=default_dtype,
         **kwargs,
         head="omol",
+    )
+
+
+@overload
+def mace_mdp(*, return_raw_model: Literal[True], **kwargs: Any) -> torch.nn.Module: ...
+
+
+@overload
+def mace_mdp(
+    *, return_raw_model: Literal[False] = False, **kwargs: Any
+) -> MACECalculator: ...
+
+
+def mace_mdp(
+    model: Optional[Union[str, Path]] = None,
+    device: str = "",
+    default_dtype: str = "float64",
+    return_raw_model: bool = False,
+    **kwargs: Any,
+) -> Union[torch.nn.Module, MACECalculator]:
+    """
+    Construct a calculator for the MACE-MDP dipole/polarizability model.
+
+    This model is only intended for predicting dipoles and polarizabilities of
+    organic systems. It is not an energy or force model.
+    """
+    warnings.warn(
+        "The MACE-MDP model is designed for predicting dipoles and polarizabilities of organic systems only. It is not suitable for energies or forces."
+    )
+
+    if "model_type" in kwargs and kwargs["model_type"] != "DipolePolarizabilityMACE":
+        raise ValueError("mace_mdp only supports model_type='DipolePolarizabilityMACE'")
+    kwargs.pop("model_type", None)
+
+    try:
+        if model is None:
+            checkpoint_url = mace_mdp_default_url
+        elif isinstance(model, str) and model.startswith("https:"):
+            checkpoint_url = model
+        elif isinstance(model, (str, Path)) and Path(model).exists():
+            checkpoint_url = str(model)
+        else:
+            raise FileNotFoundError(f"{model} not found locally")
+
+        if checkpoint_url.startswith("http"):
+            cache_dir = get_cache_dir()
+            os.makedirs(cache_dir, exist_ok=True)
+            checkpoint_url_name = os.path.basename(checkpoint_url).split("?")[0]
+            cached_model_path = os.path.join(cache_dir, checkpoint_url_name)
+            if not os.path.isfile(cached_model_path):
+                print(f"Downloading MACE-MDP model from {checkpoint_url!r}")
+                _, http_msg = _urlretrieve_with_timeout(
+                    checkpoint_url, cached_model_path
+                )
+                if "Content-Type: text/html" in str(http_msg):
+                    # See download_mace_mp_checkpoint: the body is already at
+                    # the cache path, and leaving it there poisons the cache.
+                    _discard_cached_download(cached_model_path)
+                    raise RuntimeError(
+                        f"Model download failed, please check the URL {checkpoint_url}"
+                    )
+                print(f"Cached MACE-MDP model to {cached_model_path}")
+            model_path = cached_model_path
+        else:
+            model_path = checkpoint_url
+    except Exception as exc:
+        raise RuntimeError("Model download failed and no local model found") from exc
+
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+    if return_raw_model:
+        return torch.load(model_path, map_location=device)
+
+    return MACECalculator(
+        model_paths=model_path,
+        model_type="DipolePolarizabilityMACE",
+        device=device,
+        default_dtype=default_dtype,
+        **kwargs,
     )

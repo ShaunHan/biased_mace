@@ -39,9 +39,8 @@ from .utils import (
     get_outputs,
     get_symmetric_displacement,
     prepare_graph,
-    extract_invariant,
+    safe_double,
 )
-from .global_readout import EquivariantScalarContraction, GlobalReadoutBlock
 
 
 @compile_mode("script")
@@ -82,13 +81,6 @@ class MACE(torch.nn.Module):
         lammps_mliap: Optional[bool] = False,
         readout_cls: Optional[Type[NonLinearReadoutBlock]] = NonLinearReadoutBlock,
         keep_last_layer_irreps: bool = False,
-        use_global_readout: bool = False,
-        global_readout_from_invariants_only: bool = False,
-        global_readout_hidden_dim: int = 128,
-        global_readout_descriptor_dim: int = 128,
-        global_readout_depth: int = 2,
-        global_readout_heads: int = 8,
-        global_readout_dropout: float = 0.0,
     ):
         super().__init__()
         self.register_buffer(
@@ -175,7 +167,7 @@ class MACE(torch.nn.Module):
             radial_MLP = [64, 64, 64]
         # Interactions and readout
         self.atomic_energies_fn = AtomicEnergiesBlock(atomic_energies)
-        if num_interactions == 1:
+        if num_interactions == 1 and not keep_last_layer_irreps:
             hidden_irreps_out = str(hidden_irreps[0])
         else:
             hidden_irreps_out = hidden_irreps
@@ -282,35 +274,6 @@ class MACE(torch.nn.Module):
                     )
                 )
 
-        self.use_global_readout = use_global_readout
-        self.global_readout_from_invariants_only = global_readout_from_invariants_only
-        self.global_readout_irreps = [prod.linear.irreps_out for prod in self.products]
-        if self.use_global_readout:
-            global_irreps_out = o3.Irreps(str(self.products[0].linear.irreps_out))
-            self.global_readout_l_max = global_irreps_out.lmax
-            self.global_readout_num_invariant_features = (
-                global_irreps_out.dim // (self.global_readout_l_max + 1) ** 2
-            )
-
-            if self.global_readout_from_invariants_only:
-                global_input_dim = int(self.num_interactions) * int(
-                    self.global_readout_num_invariant_features
-                )
-            else:
-                self.global_readout_contractor = EquivariantScalarContraction(
-                    self.global_readout_irreps
-                )
-                global_input_dim = self.global_readout_contractor.node_output_dim
-
-            self.global_readout = GlobalReadoutBlock(
-                input_dim=global_input_dim,
-                hidden_dim=global_readout_hidden_dim,
-                descriptor_dim=global_readout_descriptor_dim,
-                depth=global_readout_depth,
-                num_heads=global_readout_heads,
-                dropout=global_readout_dropout,
-            )
-
     def forward(
         self,
         data: Dict[str, torch.Tensor],
@@ -323,7 +286,6 @@ class MACE(torch.nn.Module):
         compute_edge_forces: bool = False,
         compute_atomic_stresses: bool = False,
         lammps_mliap: bool = False,
-        global_descriptor_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, Optional[torch.Tensor]]:
         # Setup
         ctx = prepare_graph(
@@ -341,6 +303,7 @@ class MACE(torch.nn.Module):
         vectors = ctx.vectors
         lengths = ctx.lengths
         cell = ctx.cell
+        pbc = ctx.pbc
         node_heads = ctx.node_heads.to(torch.int64)
         interaction_kwargs = ctx.interaction_kwargs
         lammps_natoms = interaction_kwargs.lammps_natoms
@@ -432,46 +395,18 @@ class MACE(torch.nn.Module):
             energies.append(energy)
             node_energies_list.append(node_es)
 
-        node_feats_out = torch.cat(node_feats_concat, dim=-1)
-
-        global_descriptor = None
-        global_energy = torch.zeros_like(e0)
- 
-        if getattr(self, "use_global_readout", False):
-            global_node_feats = node_feats_out
- 
-            if self.global_readout_from_invariants_only:
-                global_node_feats = extract_invariant(
-                    node_feats_out,
-                    num_layers=int(self.num_interactions),
-                    num_features=int(self.global_readout_num_invariant_features),
-                    l_max=int(self.global_readout_l_max),
-                )
-            else:
-                global_node_feats = self.global_readout_contractor(
-                    node_feats_concat,
-                    batch=data["batch"],
-                    node_mask=global_descriptor_mask,
-                    num_graphs=num_graphs,
-                )
-
-            global_descriptor, global_energy = self.global_readout(
-                global_node_feats,
-                batch=data["batch"],
-                node_mask=global_descriptor_mask,
-            )
-            energies.append(global_energy)
-
         contributions = torch.stack(energies, dim=-1)
         total_energy = torch.sum(contributions, dim=-1)
         node_energy = torch.sum(torch.stack(node_energies_list, dim=-1), dim=-1)
+        node_feats_out = torch.cat(node_feats_concat, dim=-1)
 
-        forces, virials, stress, hessian, edge_forces = get_outputs(
+        forces, virials, stress, hessian, edge_forces, _ = get_outputs(
             energy=total_energy,
             positions=positions,
             displacement=displacement,
             vectors=vectors,
             cell=cell,
+            pbc=pbc,
             training=training,
             compute_force=compute_force,
             compute_virials=compute_virials,
@@ -490,8 +425,8 @@ class MACE(torch.nn.Module):
                 num_atoms=positions.shape[0],
                 batch=data["batch"],
                 cell=cell,
+                pbc=pbc,
             )
-
         return {
             "energy": total_energy,
             "node_energy": node_energy,
@@ -505,8 +440,6 @@ class MACE(torch.nn.Module):
             "displacement": displacement,
             "hessian": hessian,
             "node_feats": node_feats_out,
-            "global_descriptor": global_descriptor,
-            "global_energy": global_energy,
         }
 
 
@@ -516,24 +449,9 @@ class ScaleShiftMACE(MACE):
         self,
         atomic_inter_scale: float,
         atomic_inter_shift: float,
-        use_global_readout: bool = False,
-        global_readout_from_invariants_only: bool = False,
-        global_readout_hidden_dim: int = 128,
-        global_readout_descriptor_dim: int = 128,
-        global_readout_depth: int = 2,
-        global_readout_heads: int = 8,
-        global_readout_dropout: float = 0.0,
         **kwargs,
     ):
-        super().__init__(
-            use_global_readout=use_global_readout,
-            global_readout_from_invariants_only=global_readout_from_invariants_only,
-            global_readout_hidden_dim=global_readout_hidden_dim,
-            global_readout_descriptor_dim=global_readout_descriptor_dim,
-            global_readout_depth=global_readout_depth,
-            global_readout_heads=global_readout_heads,
-            global_readout_dropout=global_readout_dropout,
-            **kwargs)
+        super().__init__(**kwargs)
         self.scale_shift = ScaleShiftBlock(
             scale=atomic_inter_scale, shift=atomic_inter_shift
         )
@@ -550,7 +468,6 @@ class ScaleShiftMACE(MACE):
         compute_edge_forces: bool = False,
         compute_atomic_stresses: bool = False,
         lammps_mliap: bool = False,
-        global_descriptor_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, Optional[torch.Tensor]]:
         # Setup
         ctx = prepare_graph(
@@ -569,6 +486,7 @@ class ScaleShiftMACE(MACE):
         vectors = ctx.vectors
         lengths = ctx.lengths
         cell = ctx.cell
+        pbc = ctx.pbc
         node_heads = ctx.node_heads.to(torch.int64)
         interaction_kwargs = ctx.interaction_kwargs
         lammps_natoms = interaction_kwargs.lammps_natoms
@@ -664,43 +582,16 @@ class ScaleShiftMACE(MACE):
         node_inter_es = self.scale_shift(node_inter_es, node_heads)
         inter_e = scatter_sum(node_inter_es, data["batch"], dim=-1, dim_size=num_graphs)
 
-        global_descriptor = None
-        global_energy = torch.zeros_like(inter_e)
- 
-        if getattr(self, "use_global_readout", False):
-            global_node_feats = node_feats_out
- 
-            if self.global_readout_from_invariants_only:
-                global_node_feats = extract_invariant(
-                    node_feats_out,
-                    num_layers=int(self.num_interactions),
-                    num_features=int(self.global_readout_num_invariant_features),
-                    l_max=int(self.global_readout_l_max),
-                )
-            else:
-                global_node_feats = self.global_readout_contractor(
-                    node_feats_list,
-                    batch=data["batch"],
-                    node_mask=global_descriptor_mask,
-                    num_graphs=num_graphs,
-                )
-
-            global_descriptor, global_energy = self.global_readout(
-                global_node_feats,
-                batch=data["batch"],
-                node_mask=global_descriptor_mask,
-            )
-            inter_e += global_energy
-
         total_energy = e0 + inter_e
-        node_energy = node_e0.clone().double() + node_inter_es.clone().double()
+        node_energy = safe_double(node_e0.clone()) + safe_double(node_inter_es.clone())
 
-        forces, virials, stress, hessian, edge_forces = get_outputs(
+        forces, virials, stress, hessian, edge_forces, _ = get_outputs(
             energy=inter_e,
             positions=positions,
             displacement=displacement,
             vectors=vectors,
             cell=cell,
+            pbc=pbc,
             training=training,
             compute_force=compute_force,
             compute_virials=compute_virials,
@@ -719,6 +610,7 @@ class ScaleShiftMACE(MACE):
                 num_atoms=positions.shape[0],
                 batch=data["batch"],
                 cell=cell,
+                pbc=pbc,
             )
         return {
             "energy": total_energy,
@@ -733,8 +625,6 @@ class ScaleShiftMACE(MACE):
             "hessian": hessian,
             "displacement": displacement,
             "node_feats": node_feats_out,
-            "global_descriptor": global_descriptor,
-            "global_energy": global_energy,
         }
 
 
@@ -758,8 +648,9 @@ class AtomicDipolesMACE(torch.nn.Module):
         gate: Optional[Callable],
         atomic_energies: Optional[
             None
-        ],  # Just here to make it compatible with energy models, MUST be None
+        ] = None,  # Just here to make it compatible with energy models, MUST be None
         apply_cutoff: bool = True,  # pylint: disable=unused-argument
+        use_agnostic_product: bool = False,  # pylint: disable=unused-argument
         use_reduced_cg: bool = True,  # pylint: disable=unused-argument
         use_so3: bool = False,  # pylint: disable=unused-argument
         distance_transform: str = "None",  # pylint: disable=unused-argument
@@ -768,6 +659,7 @@ class AtomicDipolesMACE(torch.nn.Module):
         cueq_config: Optional[Dict[str, Any]] = None,  # pylint: disable=unused-argument
         oeq_config: Optional[Dict[str, Any]] = None,  # pylint: disable=unused-argument
         edge_irreps: Optional[o3.Irreps] = None,  # pylint: disable=unused-argument
+        use_edge_irreps_first: bool = False,  # pylint: disable=unused-argument
     ):
         super().__init__()
         self.register_buffer(
@@ -972,8 +864,9 @@ class AtomicDielectricMACE(torch.nn.Module):
         gate: Optional[Callable],
         atomic_energies: Optional[
             None
-        ],  # Just here to make it compatible with energy models, MUST be None
+        ] = None,  # Just here to make it compatible with energy models, MUST be None
         apply_cutoff: bool = True,  # pylint: disable=unused-argument
+        use_agnostic_product: bool = False,  # pylint: disable=unused-argument
         use_reduced_cg: bool = True,  # pylint: disable=unused-argument
         use_so3: bool = False,  # pylint: disable=unused-argument
         distance_transform: str = "None",  # pylint: disable=unused-argument
@@ -982,11 +875,21 @@ class AtomicDielectricMACE(torch.nn.Module):
         cueq_config: Optional[Dict[str, Any]] = None,  # pylint: disable=unused-argument
         oeq_config: Optional[Dict[str, Any]] = None,  # pylint: disable=unused-argument
         edge_irreps: Optional[o3.Irreps] = None,  # pylint: disable=unused-argument
+        use_edge_irreps_first: bool = False,  # pylint: disable=unused-argument
         dipole_only: Optional[bool] = True,  # pylint: disable=unused-argument
         use_polarizability: Optional[bool] = True,  # pylint: disable=unused-argument
         means_stds: Optional[Dict[str, torch.Tensor]] = None,  # pylint: disable=W0613
+        use_last_readout_only: bool = False,  # pylint: disable=unused-argument
+        use_embedding_readout: bool = False,  # pylint: disable=unused-argument
+        readout_cls: Optional[Callable] = None,  # pylint: disable=unused-argument
+        pair_repulsion: bool = False,  # pylint: disable=unused-argument
+        heads: Optional[List[str]] = None,  # pylint: disable=unused-argument
+        only_dipole: bool = False,  # pylint: disable=unused-argument
+        atomic_energies_fn: Optional[Callable] = None,
+        embedding_specs: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
+        _ = atomic_energies_fn, embedding_specs
         self.register_buffer(
             "atomic_numbers", torch.tensor(atomic_numbers, dtype=torch.int64)
         )
@@ -1023,11 +926,17 @@ class AtomicDielectricMACE(torch.nn.Module):
         # self.use_polarizability = use_polarizability
         # self.use_dipole = use_dipole
 
+        if heads is None:
+            heads = ["Default"]
+        self.heads = heads
+
         # Embedding
         node_attr_irreps = o3.Irreps([(num_elements, (0, 1))])
         node_feats_irreps = o3.Irreps([(hidden_irreps.count(o3.Irrep(0, 1)), (0, 1))])
         self.node_embedding = LinearNodeEmbeddingBlock(
-            irreps_in=node_attr_irreps, irreps_out=node_feats_irreps
+            irreps_in=node_attr_irreps,
+            irreps_out=node_feats_irreps,
+            cueq_config=cueq_config,
         )
         self.radial_embedding = RadialEmbeddingBlock(
             r_max=r_max,
@@ -1056,6 +965,7 @@ class AtomicDielectricMACE(torch.nn.Module):
             hidden_irreps=hidden_irreps,
             avg_num_neighbors=avg_num_neighbors,
             radial_MLP=radial_MLP,
+            cueq_config=cueq_config,
         )
         self.interactions = torch.nn.ModuleList([inter])
 
@@ -1071,12 +981,17 @@ class AtomicDielectricMACE(torch.nn.Module):
             correlation=correlation,
             num_elements=num_elements,
             use_sc=use_sc_first,
+            cueq_config=cueq_config,
         )
         self.products = torch.nn.ModuleList([prod])
 
         self.readouts = torch.nn.ModuleList()
         self.readouts.append(
-            LinearDipolePolarReadoutBlock(hidden_irreps, use_polarizability=True)
+            LinearDipolePolarReadoutBlock(
+                hidden_irreps,
+                use_polarizability=True,
+                cueq_config=cueq_config,
+            )
         )
 
         for i in range(num_interactions - 1):
@@ -1102,6 +1017,7 @@ class AtomicDielectricMACE(torch.nn.Module):
                 hidden_irreps=hidden_irreps_out,
                 avg_num_neighbors=avg_num_neighbors,
                 radial_MLP=radial_MLP,
+                cueq_config=cueq_config,
             )
             self.interactions.append(inter)
             prod = EquivariantProductBasisBlock(
@@ -1110,6 +1026,7 @@ class AtomicDielectricMACE(torch.nn.Module):
                 correlation=correlation,
                 num_elements=num_elements,
                 use_sc=True,
+                cueq_config=cueq_config,
             )
             self.products.append(prod)
             if i == num_interactions - 2:
@@ -1119,6 +1036,7 @@ class AtomicDielectricMACE(torch.nn.Module):
                         MLP_irreps,
                         gate,
                         use_polarizability=True,
+                        cueq_config=cueq_config,
                     )
                 )
                 # print("Nonlinear irrpes: ", hidden_irreps_out, MLP_irreps)
@@ -1129,6 +1047,7 @@ class AtomicDielectricMACE(torch.nn.Module):
                         hidden_irreps,
                         # use_charge=True,
                         use_polarizability=True,
+                        cueq_config=cueq_config,
                     )
                 )
 
@@ -1309,6 +1228,7 @@ class EnergyDipolesMACE(torch.nn.Module):
         cueq_config: Optional[Dict[str, Any]] = None,  # pylint: disable=unused-argument
         oeq_config: Optional[Dict[str, Any]] = None,  # pylint: disable=unused-argument
         edge_irreps: Optional[o3.Irreps] = None,  # pylint: disable=unused-argument
+        use_edge_irreps_first: bool = False,  # pylint: disable=unused-argument
     ):
         super().__init__()
         self.register_buffer(
@@ -1520,11 +1440,12 @@ class EnergyDipolesMACE(torch.nn.Module):
         )  # [n_graphs,3]
         total_dipole = total_dipole + baseline
 
-        forces, virials, stress, _, _ = get_outputs(
+        forces, virials, stress, _, _, _ = get_outputs(
             energy=total_energy,
             positions=data["positions"],
             displacement=displacement,
             cell=data["cell"],
+            pbc=data["pbc"] if "pbc" in data else None,
             training=training,
             compute_force=compute_force,
             compute_virials=compute_virials,
