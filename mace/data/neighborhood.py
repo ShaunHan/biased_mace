@@ -76,6 +76,11 @@ def get_neighborhood(
     cell: Optional[np.ndarray] = None,  # [3, 3]
     true_self_interaction=False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    positions = np.asarray(positions, dtype=float)
+    if positions.ndim != 2 or positions.shape[1] != 3 or len(positions) == 0:
+        raise ValueError("positions must have shape (N,3), N > 0")
+    if not np.isfinite(positions).all() or not np.isfinite(cutoff) or cutoff <= 0:
+        raise ValueError("Neighbour positions/cutoff must be finite; cutoff > 0")
     if pbc is None:
         pbc = (False, False, False)
 
@@ -136,6 +141,25 @@ def get_neighborhood(
                 cell[dim] = extended_cell[dim]
     else:
         cell = extended_cell
+
+    if not any(pbc):
+        # An exact open-boundary cutoff graph: memory is independent of vacuum
+        # extent and absolute origin. The physical real-space PES is unchanged.
+        from scipy.spatial import cKDTree
+        if not np.isfinite(positions).all() or not np.isfinite(cutoff) or cutoff <= 0:
+            raise ValueError("Neighbour positions/cutoff must be finite; cutoff > 0")
+        pairs = cKDTree(positions).query_pairs(cutoff, output_type="ndarray")
+        if len(pairs):
+            delta = positions[pairs[:, 1]] - positions[pairs[:, 0]]
+            pairs = pairs[np.einsum("ij,ij->i", delta, delta) < cutoff**2]
+        edges = np.concatenate((pairs, pairs[:, ::-1]), axis=0)
+        if true_self_interaction:
+            diagonal = np.arange(len(positions))
+            edges = np.concatenate((edges, np.stack((diagonal, diagonal), axis=1)))
+        if len(edges):
+            edges = edges[np.lexsort((edges[:, 1], edges[:, 0]))]
+        edge_index = edges.T.astype(np.int64, copy=False)
+        return edge_index, np.zeros((len(edges), 3)), np.zeros((len(edges), 3), dtype=int), cell
 
     sender, receiver, unit_shifts = neighbour_list(
         quantities="ijS",
