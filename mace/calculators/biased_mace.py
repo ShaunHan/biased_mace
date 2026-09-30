@@ -20,32 +20,35 @@ from mace.modules.target_bias import (
     target_potential,
 )
 from mace.tools import torch_tools
-from mace.tools.adaptive_bias import partition_escape_energy
+from mace.tools.adaptive_bias import partition_escape_energy, validate_bias_weight
 
 
 class BiasedMACECalculator(MACECalculator):
-    """E(R) = U(R) + w*d(R,target)^2/2, with exact autograd forces.
+    """Conservative target restraint V=w*d**2/2 for eager MACE models.
 
-    bias_weight: nonnegative eV, or "auto". Auto uses begin_hop() to match
-    the launch kinetic energy to the bias at the fixed reference, sharing one
-    MH escape-energy budget. The driver must rescale momenta to
-    hop_kinetic_energy after begin_hop(). The weight stays
-    fixed during each hop, including softening, MD and preliminary relaxation.
-    Patched MH calls begin_hop automatically; ordinary ASE drivers may call it
-    at explicit trajectory boundaries. No new trainable parameters are added.
+    bias_weight is strictly a float. With use_adaptive_bias=False it is w in eV.
+    With use_adaptive_bias=True it is the dimensionless ratio V(d=1)/K_launch.
+    begin_hop() then shares the supplied escape energy between K and V_start.
+    The driver applies hop_kinetic_energy, keeping w fixed throughout the escape.
+    No model-training objective, feature representation or physical PES is changed.
     """
 
-    auto_bias_protocol = "shared_escape_energy_v1"
+    auto_bias_protocol = "shared_escape_energy_ratio_v2"
 
     def __init__(
         self,
         *args,
         target_atoms,
         bias_weight=0.0,
+        use_adaptive_bias=False,
         reference_atoms=None,
         store_descriptor=False,
         **kwargs,
     ):
+        validate_bias_weight(bias_weight)
+        if type(use_adaptive_bias) is not bool:
+            raise TypeError("use_adaptive_bias must be True or False")
+        self._automatic = use_adaptive_bias
         self._bias_ready = False
         if kwargs.get("compile_mode") is not None:
             raise ValueError(
@@ -86,45 +89,56 @@ class BiasedMACECalculator(MACECalculator):
             for p in self.implemented_properties
             if p not in ("energies", "node_energy")
         ]
-        if bias_weight == "auto" and reference_atoms is None:
-            raise ValueError("bias_weight=auto requires distinct reference_atoms")
+        if use_adaptive_bias and bias_weight > 0 and reference_atoms is None:
+            raise ValueError("Adaptive bias requires distinct reference_atoms")
         self.set_target(target_atoms, reference_atoms)
 
     @property
     def bias_weight(self):
-        return "auto" if self._automatic else self._bias_weight
+        """User setting: eV in fixed mode, dimensionless ratio in adaptive mode."""
+        return self._bias_strength
 
     @bias_weight.setter
     def bias_weight(self, value):
-        if isinstance(value, str) and value == "auto":
-            self._automatic, self._hop_ready = True, False
-            self._bias_weight = 0.0
-        else:
-            value = float(value)
-            if not math.isfinite(value) or value < 0:
-                raise ValueError("bias_weight must be 'auto' or a nonnegative eV value")
-            self._automatic, self._hop_ready = False, True
-            self._bias_weight = value
+        self._bias_strength = validate_bias_weight(value)
+        self._bias_weight = 0.0 if self._automatic else value
+        self._hop_ready = not self._automatic or value == 0.0
         self.reset()
 
     @property
+    def use_adaptive_bias(self):
+        return self._automatic
+
+    @use_adaptive_bias.setter
+    def use_adaptive_bias(self, value):
+        if type(value) is not bool:
+            raise TypeError("use_adaptive_bias must be True or False")
+        if (value and self.bias_weight > 0 and getattr(self, "_bias_ready", False)
+                and not self._normalized_reference):
+            raise ValueError("Adaptive bias requires distinct reference_atoms")
+        self._automatic = value
+        self.bias_weight = self.bias_weight  # Invalidate cached energies and hop state.
+
+    @property
     def current_bias_weight(self):
-        """The numeric weight (eV) used for the current hop."""
+        """Actual harmonic coefficient w in eV, constant within the current hop."""
         return self._bias_weight
 
-    def _start_distance_squared(self, atoms):
-        """One forward per member, no force/Jacobian probe or persistent graph."""
+    def _probe_target(self, atoms, gradients=False):
+        """Independent diagnostic: no mutation of ASE result caches or hop state."""
+        self._validate_structure(atoms)
         groups = self._groups_for_atoms(atoms)
-        distances = []
+        distances, energies, unit_forces = [], [], []
         with torch.enable_grad(), torch_tools.default_dtype(self.default_dtype):
             for index, model in enumerate(self.models):
                 batch = self._prepare_reference(atoms)
                 self._validate_context(index, batch)
+                batch["positions"].requires_grad_(True)
                 out, features = self._evaluate_features(model, batch, {
                     "compute_force": False, "compute_stress": False,
                     "compute_virials": False, "training": False,
                 })
-                with torch.no_grad():
+                with torch.set_grad_enabled(gradients):
                     moments = self._descriptors[index].moment_factors(features, groups)
                     if self._moment_metrics[index].compatible:
                         squared = self._moment_metrics[index](moments)
@@ -132,33 +146,69 @@ class BiasedMACECalculator(MACECalculator):
                         descriptor = torch.cat(
                             self._descriptors[index].segments_from_moments(moments), -1)
                         squared = self._metrics[index](descriptor)
-                    distances.append(float(squared.detach().sum()))
+                if gradients:
+                    unit = 0.5 * squared.sum() + 0.0 * batch["positions"].sum()
+                    derivative, = torch.autograd.grad(unit, batch["positions"])
+                    unit_forces.append(-derivative.detach().cpu().numpy())
+                distances.append(float(squared.detach().sum()))
+                energies.append(float(out["energy"].detach().sum()) * self.energy_units_to_eV)
                 del out, features, batch, moments, squared
-        # A committee has one PES: its bias is w times the mean unit bias.
-        return float(np.mean(distances))
+        squared = float(np.mean(distances))
+        if not math.isfinite(squared) or squared < 0:
+            raise FloatingPointError("Invalid descriptor distance")
+        return squared, float(np.mean(energies)), (np.mean(unit_forces, axis=0) if gradients else None)
+
+    def _start_distance_squared(self, atoms):
+        return self._probe_target(atoms)[0]
+
+    def get_bias_energy(self, atoms):
+        """Bias on an arbitrary geometry at the SAME current weight (acceptance)."""
+        if not self._hop_ready:
+            raise RuntimeError("Call begin_hop before evaluating an adaptive bias")
+        if self.current_bias_weight == 0:
+            return 0.0
+        return 0.5 * self.current_bias_weight * self._start_distance_squared(atoms)
+
+    def get_bias_diagnostics(self, atoms, *, forces=False):
+        """Report progress and, optionally, the exact bias-only force at a boundary.
+
+        Force diagnostics cost one extra reverse pass per committee member. They
+        are not used as a force cap, a learned correction, or a dynamics update.
+        """
+        if not self._hop_ready:
+            raise RuntimeError("Call begin_hop before bias diagnostics")
+        squared, energy, unit_force = self._probe_target(atoms, gradients=forces)
+        result = dict(distance=math.sqrt(squared), distance_squared=squared,
+                      physical_energy=energy, bias_energy=0.5*self.current_bias_weight*squared,
+                      weight=self.current_bias_weight)
+        if forces:
+            force = self.current_bias_weight * unit_force
+            result.update(bias_force_rms=float(np.sqrt(np.mean(force**2))),
+                          bias_force_max=float(np.linalg.norm(force, axis=1).max(initial=0.0)))
+        if not all(math.isfinite(value) for value in result.values()):
+            raise FloatingPointError("Nonfinite bias diagnostic")
+        return result
 
     def begin_hop(self, atoms, *, kinetic_energy):
-        """Set one fixed harmonic PES and expose its launch-energy allocation.
+        """Set w from the MH draw and expose the required launch kinetic energy.
 
-        ``kinetic_energy`` is the unbiassed MH draw E_h, in eV. Automatic mode
-        sets w=2*E_h/(1+d_start**2) and hop_kinetic_energy=E_h/(1+d_start**2).
-        The MH driver MUST then rescale its atomic (and cell) velocities to
-        hop_kinetic_energy. This method does not mutate the supplied atoms.
-        Numeric weights and their original kinetic draw are unchanged.
+        Adaptive: w=2*gamma*E/(1+gamma*d_start**2), K=E/(1+gamma*d_start**2).
+        gamma is bias_weight. The caller MUST rescale momenta to K afterward.
+        Fixed: w=bias_weight [eV], with the original kinetic draw unchanged.
         """
         self._validate_structure(atoms)
         energy = float(kinetic_energy)
         if not math.isfinite(energy) or energy < 0:
             raise ValueError("Escape kinetic draw must be finite and nonnegative")
-        if self._automatic and not self._normalized_reference:
-            raise ValueError("Auto bias requires distinct reference_atoms")
+        if self._automatic and self.bias_weight > 0 and not self._normalized_reference:
+            raise ValueError("Adaptive bias requires distinct reference_atoms")
         self._hop_ready = False
         self.reset()
         squared = self._start_distance_squared(atoms)
         if not math.isfinite(squared) or squared < 0:
             raise FloatingPointError("Invalid starting descriptor distance")
         if self._automatic:
-            weight, kinetic = partition_escape_energy(energy, squared)
+            weight, kinetic = partition_escape_energy(energy, squared, self.bias_weight)
         else:
             weight, kinetic = self._bias_weight, energy
         self._bias_weight = weight
@@ -312,7 +362,7 @@ class BiasedMACECalculator(MACECalculator):
                     MomentTargetMetric(target_moments[0], metric)
                 )
         self._normalized_reference = reference_atoms is not None
-        if self._automatic:
+        if self._automatic and self.bias_weight > 0:
             self._hop_ready = False
         self._bias_ready = True
         self.reset()
@@ -421,7 +471,7 @@ class BiasedMACECalculator(MACECalculator):
     def calculate(self, atoms=None, properties=None, system_changes=all_changes):
         if not self._hop_ready:
             raise RuntimeError(
-                "Auto bias is not initialized: call begin_hop or use patched MH"
+                "Adaptive bias is not initialized: call begin_hop or use patched MH"
             )
         atoms = self.atoms if atoms is None else atoms
         self._validate_structure(atoms)
@@ -486,20 +536,28 @@ class BiasedMACECalculator(MACECalculator):
         """Metric for reproducible restarts with identical model/target/settings."""
         return {
             "bias_weight": self.bias_weight,
+            "head": getattr(self, "head", None),
+            "model_type": getattr(self, "model_type", None),
             "current_bias_weight": self.current_bias_weight,
             "hop_ready": self._hop_ready,
             "normalized_reference": self._normalized_reference,
             "metrics": [deepcopy(m.state_dict()) for m in self._metrics],
-            "auto_protocol": "shared_escape_energy_v1",
+            "auto_protocol": self.auto_bias_protocol,
+            "use_adaptive_bias": self.use_adaptive_bias,
             "hop_kinetic_energy": getattr(self, "hop_kinetic_energy", None),
             "hop_distance_squared": getattr(self, "hop_distance_squared", None),
             "hop_energy_budget": getattr(self, "hop_energy_budget", None),
         }
 
     def load_bias_state_dict(self, state):
-        if (state.get("bias_weight") == "auto" and
-                state.get("auto_protocol") != "shared_escape_energy_v1"):
-            raise ValueError("Old automatic-bias protocol: start a new search")
+        if state.get("auto_protocol") != self.auto_bias_protocol:
+            raise ValueError("Different bias protocol: use a new search directory")
+        if (state.get("use_adaptive_bias") != self.use_adaptive_bias
+                or state.get("bias_weight") != self.bias_weight):
+            raise ValueError("Bias mode/strength changed across restart; start a new search segment")
+        if (state.get("head") != getattr(self, "head", None)
+                or state.get("model_type") != getattr(self, "model_type", None)):
+            raise ValueError("Selected head/model type changed across restart")
         if len(state["metrics"]) != len(self._metrics):
             raise ValueError("Committee size differs from restart state")
         for metric, saved in zip(self._metrics, state["metrics"]):
@@ -507,6 +565,8 @@ class BiasedMACECalculator(MACECalculator):
                 metric.target, saved["target"].to(metric.target), rtol=1e-9, atol=1e-12
             ):
                 raise ValueError("Model/target descriptor differs from restart state")
+            if not torch.allclose(metric.scale, saved["scale"].to(metric.scale), rtol=1e-9, atol=1e-12):
+                raise ValueError("Reference calibration differs from restart state")
             metric.load_state_dict(saved)
         for metric in self._moment_metrics:
             metric.refresh_scales()
