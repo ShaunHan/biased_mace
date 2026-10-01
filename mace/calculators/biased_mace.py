@@ -24,16 +24,16 @@ from mace.tools.adaptive_bias import partition_bias_energy, validate_bias_weight
 
 
 class BiasedMACECalculator(MACECalculator):
-    """Conservative target restraint ``V = w d^2 / 2`` for eager MACE models.
+    """Conservative target restraint ``V = w d^2`` for eager MACE models.
 
     ``bias_weight`` is always a float.  In fixed mode it is the harmonic
-    coefficient ``w`` in eV.  In adaptive mode it is the dimensionless
+    coefficient ``w = V(d=1)`` in eV.  In adaptive mode it is the dimensionless
     guidance/exploration ratio ``V(d=1) / K``.  An external driver supplies
     an energy scale through :meth:`adapt_bias`; the calculator then fixes ``w``
     until :meth:`adapt_bias` is called again.
     """
 
-    adaptive_bias_protocol = "energy_partition_ratio_v1"
+    adaptive_bias_protocol = "energy_partition_ratio_v2"
 
     def __init__(
         self,
@@ -147,7 +147,7 @@ class BiasedMACECalculator(MACECalculator):
                             self._descriptors[index].segments_from_moments(moments), -1)
                         squared = self._metrics[index](descriptor)
                 if gradients:
-                    unit = 0.5 * squared.sum() + 0.0 * batch["positions"].sum()
+                    unit = squared.sum() + 0.0 * batch["positions"].sum()
                     derivative, = torch.autograd.grad(unit, batch["positions"])
                     unit_forces.append(-derivative.detach().cpu().numpy())
                 distances.append(float(squared.detach().sum()))
@@ -167,7 +167,7 @@ class BiasedMACECalculator(MACECalculator):
             raise RuntimeError("Call adapt_bias before evaluating an adaptive bias")
         if self.current_bias_weight == 0:
             return 0.0
-        return 0.5 * self.current_bias_weight * self._distance_squared(atoms)
+        return self.current_bias_weight * self._distance_squared(atoms)
 
     def get_bias_diagnostics(self, atoms, *, forces=False):
         """Report progress and, optionally, the exact bias-only force at a boundary.
@@ -179,7 +179,7 @@ class BiasedMACECalculator(MACECalculator):
             raise RuntimeError("Call adapt_bias before bias diagnostics")
         squared, energy, unit_force = self._probe_target(atoms, gradients=forces)
         result = dict(distance=math.sqrt(squared), distance_squared=squared,
-                      physical_energy=energy, bias_energy=0.5*self.current_bias_weight*squared,
+                      physical_energy=energy, bias_energy=self.current_bias_weight*squared,
                       weight=self.current_bias_weight)
         if forces:
             force = self.current_bias_weight * unit_force
@@ -196,7 +196,7 @@ class BiasedMACECalculator(MACECalculator):
         supplied geometry, with squared target distance ``d0^2``,
 
             K = E / (1 + gamma d0^2),
-            w = 2 gamma K.
+            w = gamma K.
 
         The method returns ``K``.  It does not modify positions, velocities, or
         any sampling state, and it has no dependency on a particular driver.
@@ -550,11 +550,15 @@ class BiasedMACECalculator(MACECalculator):
         }
 
     def load_bias_state_dict(self, state):
-        if state.get("protocol") != self.adaptive_bias_protocol:
+        legacy = state.get("protocol") == "energy_partition_ratio_v1"
+        if not legacy and state.get("protocol") != self.adaptive_bias_protocol:
             raise ValueError("Incompatible adaptive-bias state")
         if state.get("use_adaptive_bias") != self.use_adaptive_bias:
             raise ValueError("Adaptive-bias mode differs from saved state")
-        if float(state.get("bias_weight")) != self.bias_weight:
+        saved_strength = float(state.get("bias_weight"))
+        if legacy and not self.use_adaptive_bias:
+            saved_strength *= 0.5
+        if saved_strength != self.bias_weight:
             raise ValueError("bias_weight differs from saved state")
         if len(state["metrics"]) != len(self._metrics):
             raise ValueError("Committee size differs from saved state")
@@ -567,6 +571,8 @@ class BiasedMACECalculator(MACECalculator):
         for metric in self._moment_metrics:
             metric.refresh_scales()
         weight = float(state["current_bias_weight"])
+        if legacy:
+            weight *= 0.5  # Preserve V when loading the former V=w*d^2/2 convention.
         if not math.isfinite(weight) or weight < 0.0:
             raise ValueError("Invalid saved bias coefficient")
         self._bias_weight = weight

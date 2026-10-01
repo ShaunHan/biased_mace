@@ -156,8 +156,8 @@ class MomentTargetMetric(torch.nn.Module):
 
 
 def target_potential(distance_squared):
-    """Harmonic restraint, v=d^2/2; no square root or cusp at the target."""
-    return 0.5 * distance_squared
+    """Quadratic restraint, v=d^2; no square root or cusp at the target."""
+    return distance_squared
 
 
 def biased_autograd(

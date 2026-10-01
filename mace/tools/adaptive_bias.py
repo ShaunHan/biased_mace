@@ -16,10 +16,10 @@ def partition_bias_energy(energy_scale, distance_squared, balance):
     """Partition one energy scale between motion and a harmonic target bias.
 
     In adaptive mode ``balance`` is the dimensionless ratio
-    V(d=1) / K.  For V = w d^2 / 2,
+    V(d=1) / K.  For V = w d^2,
 
         K = E / (1 + balance d0^2)
-        w = 2 balance K.
+        w = balance K.
 
     Returns ``(w, K)``.  The caller decides how the returned motion energy is
     used; this module has no dependency on any particular sampling algorithm.
@@ -35,4 +35,4 @@ def partition_bias_energy(energy_scale, distance_squared, balance):
         return 0.0, energy_scale
     denominator = 1.0 + balance * distance_squared
     motion_energy = energy_scale / denominator
-    return 2.0 * balance * motion_energy, motion_energy
+    return balance * motion_energy, motion_energy
