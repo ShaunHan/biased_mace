@@ -6,6 +6,10 @@ import math
 class BiasForceError(FloatingPointError):
     """A trial geometry exceeds the bias-force limit; no clipped forces exist."""
 
+    # A spatial force boundary is not a Verlet integration error. Drivers must
+    # restart the whole proposal with a lower, fixed coefficient, not shrink dt.
+    restart_escape = True
+
     def __init__(self, force, limit):
         self.force = float(force)
         self.limit = float(limit)

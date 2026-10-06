@@ -35,7 +35,7 @@ class BiasedMACECalculator(MACECalculator):
     requested guidance/exploration ratio ``V(d=1) / K``, reduced if the initial
     force limit binds. An external driver supplies
     an energy scale through :meth:`adapt_bias`; the calculator then fixes ``w``
-    until :meth:`adapt_bias` is called again.
+    until :meth:`adapt_bias` or :meth:`retry_bias` is called between proposals.
 
     ``max_bias_force`` (eV/Angstrom, default 10) rejects excessive atomic bias
     forces. It never clips forces or changes the coefficient during evaluation.
@@ -43,7 +43,7 @@ class BiasedMACECalculator(MACECalculator):
     additional reverse pass, but no extra model forward or second derivatives.
     """
 
-    adaptive_bias_protocol = "energy_partition_linear_tail_v3"
+    adaptive_bias_protocol = "energy_partition_linear_tail_v4"
 
     def __init__(
         self,
@@ -127,6 +127,9 @@ class BiasedMACECalculator(MACECalculator):
         self._bias_strength = validate_bias_weight(value)
         self._bias_weight = 0.0 if self._adaptive else value
         self._adaptive_ready = not self._adaptive or value == 0.0
+        self._adaptive_weight_ceiling = None
+        self._launch_budget = None
+        self._launch_potential = None
         self.reset()
 
     @property
@@ -252,11 +255,37 @@ class BiasedMACECalculator(MACECalculator):
         else:
             weight, motion_energy = self.bias_weight, energy_scale
 
+        if self._adaptive and self._adaptive_weight_ceiling is not None:
+            weight = min(weight, self._adaptive_weight_ceiling)
+            motion_energy = max(0.0, energy_scale - weight * potential)
         self._bias_weight = weight
+        self._launch_budget = energy_scale
+        self._launch_potential = potential
         self.adaptive_distance_squared = distance_squared
         self.adaptive_motion_energy = motion_energy
         self._adaptive_ready = True
         return motion_energy
+
+    def retry_bias(self):
+        """Halve an adaptive coefficient for a FULL escape restart.
+
+        The driver must discard the unsuccessful proposal, restore its launch
+        geometry and velocity direction, and rescale to the returned kinetic
+        energy. Never call this in the middle of an accepted MD trajectory.
+        The original budget is retained and the reduced coefficient is a ceiling
+        for subsequent launches. Fixed-weight calculations are never retuned.
+        """
+        if not self.use_adaptive_bias:
+            raise RuntimeError("A fixed bias cannot be reduced automatically")
+        if not self._adaptive_ready or self._launch_budget is None:
+            raise RuntimeError("Call adapt_bias before retry_bias")
+        self._bias_weight *= 0.5
+        self._adaptive_weight_ceiling = self._bias_weight
+        self.adaptive_motion_energy = max(
+            0.0, self._launch_budget - self._bias_weight * self._launch_potential
+        )
+        self.reset()
+        return self.adaptive_motion_energy
 
     def set_electrostatic_pbcs(self, pbc_handling):
         if getattr(self, "_bias_ready", False):
@@ -400,6 +429,9 @@ class BiasedMACECalculator(MACECalculator):
                     MomentTargetMetric(target_moments[0], metric)
                 )
         self._normalized_reference = reference_atoms is not None
+        self._adaptive_weight_ceiling = None
+        self._launch_budget = None
+        self._launch_potential = None
         if self._adaptive and self.bias_weight > 0:
             self._adaptive_ready = False
         self._bias_ready = True
@@ -602,13 +634,16 @@ class BiasedMACECalculator(MACECalculator):
             "normalized_reference": self._normalized_reference,
             "protocol": self.adaptive_bias_protocol,
             "max_bias_force": self.max_bias_force,
+            "adaptive_weight_ceiling": self._adaptive_weight_ceiling,
+            "launch_budget": self._launch_budget,
+            "launch_potential": self._launch_potential,
             "metrics": [deepcopy(metric.state_dict()) for metric in self._metrics],
         }
 
     def load_bias_state_dict(self, state):
-        if state.get("protocol") != self.adaptive_bias_protocol:
-            raise ValueError("Incompatible bias potential. Start a new v3 bias protocol; "
-                             "a quadratic-bias state is not a linear-tail restart.")
+        if state.get("protocol") not in (
+                self.adaptive_bias_protocol, "energy_partition_linear_tail_v3"):
+            raise ValueError("Incompatible bias potential in saved state")
         if state.get("max_bias_force") != self.max_bias_force:
             raise ValueError("max_bias_force differs from saved state")
         if state.get("use_adaptive_bias") != self.use_adaptive_bias:
@@ -632,4 +667,9 @@ class BiasedMACECalculator(MACECalculator):
         self._bias_weight = weight
         self._adaptive_ready = bool(state["adaptive_ready"])
         self._normalized_reference = bool(state["normalized_reference"])
+        for key in ("adaptive_weight_ceiling", "launch_budget", "launch_potential"):
+            value = state.get(key)
+            if value is not None and (not math.isfinite(value) or value < 0.0):
+                raise ValueError(f"Invalid saved {key}")
+            setattr(self, "_" + key, value)
         self.reset()
