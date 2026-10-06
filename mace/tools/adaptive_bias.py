@@ -3,6 +3,18 @@
 import math
 
 
+class BiasForceError(FloatingPointError):
+    """A trial geometry exceeds the bias-force limit; no clipped forces exist."""
+
+    def __init__(self, force, limit):
+        self.force = float(force)
+        self.limit = float(limit)
+        super().__init__(
+            f"Atomic bias force {force:.6g} eV/Ang exceeds max_bias_force={limit:.6g}. "
+            "Reject this trial geometry; do not use clipped forces."
+        )
+
+
 def validate_bias_weight(value):
     """Require an explicit finite nonnegative floating-point bias weight."""
     if type(value) is not float:
@@ -12,13 +24,14 @@ def validate_bias_weight(value):
     return value
 
 
-def partition_bias_energy(energy_scale, distance_squared, balance):
-    """Partition one energy scale between motion and a harmonic target bias.
+def partition_bias_energy(energy_scale, unit_potential, balance, *,
+                          unit_force_max=0.0, force_limit=None):
+    """Partition one escape energy with an optional initial force constraint.
 
     In adaptive mode ``balance`` is the dimensionless ratio
-    V(d=1) / K.  For V = w d^2,
+    V(d=1) / K before the force constraint. For V = w v,
 
-        K = E / (1 + balance d0^2)
+        K = E / (1 + balance v0)
         w = balance K.
 
     Returns ``(w, K)``.  The caller decides how the returned motion energy is
@@ -26,13 +39,22 @@ def partition_bias_energy(energy_scale, distance_squared, balance):
     """
     balance = validate_bias_weight(balance)
     energy_scale = float(energy_scale)
-    distance_squared = float(distance_squared)
+    unit_potential = float(unit_potential)
     if not math.isfinite(energy_scale) or energy_scale < 0.0:
         raise ValueError("energy_scale must be finite and nonnegative")
-    if not math.isfinite(distance_squared) or distance_squared < 0.0:
-        raise ValueError("distance_squared must be finite and nonnegative")
+    if not math.isfinite(unit_potential) or unit_potential < 0.0:
+        raise ValueError("unit_potential must be finite and nonnegative")
+    if not math.isfinite(unit_force_max) or unit_force_max < 0:
+        raise ValueError("unit_force_max must be finite and nonnegative")
+    if force_limit is not None and (not math.isfinite(force_limit) or force_limit <= 0):
+        raise ValueError("force_limit must be finite and positive or None")
     if balance == 0.0 or energy_scale == 0.0:
         return 0.0, energy_scale
-    denominator = 1.0 + balance * distance_squared
+    denominator = 1.0 + balance * unit_potential
     motion_energy = energy_scale / denominator
-    return balance * motion_energy, motion_energy
+    weight = balance * motion_energy
+    if force_limit is not None and unit_force_max > 0:
+        weight = min(weight, force_limit / unit_force_max)
+        # A smaller restraint leaves more of the SAME budget for motion.
+        motion_energy = max(0.0, energy_scale - weight * unit_potential)
+    return weight, motion_energy

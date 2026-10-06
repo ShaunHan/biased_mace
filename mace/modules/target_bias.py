@@ -1,4 +1,4 @@
-"""Fixed descriptor metric and quadratic target bias (autograd intact)."""
+"""Fixed descriptor metric and smooth target restraint (autograd intact)."""
 
 import math
 from typing import Sequence
@@ -156,8 +156,15 @@ class MomentTargetMetric(torch.nn.Module):
 
 
 def target_potential(distance_squared):
-    """Quadratic restraint, v=d^2; no square root or cusp at the target."""
-    return distance_squared
+    """Harmonic near the target, linear in distance far away, with v(1)=1.
+
+    The rationalized expression avoids cancellation at d=0. The slope in
+    descriptor space is bounded; Cartesian forces still depend on its Jacobian.
+    No energy saturation or moving parameters are introduced.
+    """
+    return distance_squared / (
+        ((1.0 + distance_squared) ** 0.5 + 1.0) * (math.sqrt(2.0) - 1.0)
+    )
 
 
 def biased_autograd(
@@ -168,15 +175,29 @@ def biased_autograd(
     displacement=None,
     cell=None,
     pbc=None,
+    return_bias_forces=False,
 ):
-    """One forward, one reverse pass; fixed weight in MODEL energy units.
+    """One forward; an optional extra reverse pass isolates the bias force.
 
+    Weight is fixed in MODEL energy units.
     All differentiable field/density responses remain in the total gradient.
     """
     if not math.isfinite(float(weight)) or weight < 0:
         raise ValueError("bias_weight must be finite and nonnegative")
-    total = physical_energy + weight * unit_potential
+    total = physical_energy if weight == 0 else physical_energy + weight * unit_potential
     total = total + 0 * positions.sum()
+    bias_forces = None
+    if return_bias_forces:
+        if weight == 0:
+            bias_forces = torch.zeros_like(positions)
+        else:
+            derivative = torch.autograd.grad(
+                (weight * unit_potential).sum() + 0 * positions.sum(), positions,
+                retain_graph=True, allow_unused=True,
+            )[0]
+            bias_forces = (
+                -derivative if derivative is not None else torch.zeros_like(positions)
+            )
     inputs = [positions] if displacement is None else [positions, displacement]
     grads = torch.autograd.grad(total.sum(), inputs, allow_unused=True)
     forces = -grads[0] if grads[0] is not None else torch.zeros_like(positions)
@@ -195,4 +216,5 @@ def biased_autograd(
             periodic[:, None, None], strain_gradient / safe_volume[:, None, None], 0
         )
         virials = -strain_gradient
-    return total, forces, stress, virials
+    result = (total, forces, stress, virials)
+    return result + (bias_forces,) if return_bias_forces else result

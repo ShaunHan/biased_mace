@@ -20,20 +20,30 @@ from mace.modules.target_bias import (
     target_potential,
 )
 from mace.tools import torch_tools
-from mace.tools.adaptive_bias import partition_bias_energy, validate_bias_weight
+from mace.tools.adaptive_bias import (
+    BiasForceError,
+    partition_bias_energy,
+    validate_bias_weight,
+)
 
 
 class BiasedMACECalculator(MACECalculator):
-    """Conservative target restraint ``V = w d^2`` for eager MACE models.
+    """Smooth harmonic-to-linear target restraint for eager MACE models.
 
-    ``bias_weight`` is always a float.  In fixed mode it is the harmonic
+    ``bias_weight`` is always a float.  In fixed mode it is the restraint
     coefficient ``w = V(d=1)`` in eV.  In adaptive mode it is the dimensionless
-    guidance/exploration ratio ``V(d=1) / K``.  An external driver supplies
+    requested guidance/exploration ratio ``V(d=1) / K``, reduced if the initial
+    force limit binds. An external driver supplies
     an energy scale through :meth:`adapt_bias`; the calculator then fixes ``w``
     until :meth:`adapt_bias` is called again.
+
+    ``max_bias_force`` (eV/Angstrom, default 10) rejects excessive atomic bias
+    forces. It never clips forces or changes the coefficient during evaluation.
+    Set it to None only to explicitly disable this check. Checking needs one
+    additional reverse pass, but no extra model forward or second derivatives.
     """
 
-    adaptive_bias_protocol = "energy_partition_ratio_v2"
+    adaptive_bias_protocol = "energy_partition_linear_tail_v3"
 
     def __init__(
         self,
@@ -43,12 +53,14 @@ class BiasedMACECalculator(MACECalculator):
         use_adaptive_bias=False,
         reference_atoms=None,
         store_descriptor=False,
+        max_bias_force=10.0,
         **kwargs,
     ):
         validate_bias_weight(bias_weight)
         if type(use_adaptive_bias) is not bool:
             raise TypeError("use_adaptive_bias must be True or False")
         self._adaptive = use_adaptive_bias
+        self.max_bias_force = max_bias_force
         self._bias_ready = False
         if kwargs.get("compile_mode") is not None:
             raise ValueError(
@@ -94,6 +106,18 @@ class BiasedMACECalculator(MACECalculator):
         self.set_target(target_atoms, reference_atoms)
 
     @property
+    def max_bias_force(self):
+        return self._max_bias_force
+
+    @max_bias_force.setter
+    def max_bias_force(self, value):
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            raise ValueError("max_bias_force must be positive and finite, or None")
+        self._max_bias_force = value
+        if hasattr(self, "results"):
+            self.reset()
+
+    @property
     def bias_weight(self):
         """User setting: eV in fixed mode, dimensionless ratio in adaptive mode."""
         return self._bias_strength
@@ -128,7 +152,7 @@ class BiasedMACECalculator(MACECalculator):
         """Independent diagnostic: no mutation of ASE result caches or adaptive state."""
         self._validate_structure(atoms)
         groups = self._groups_for_atoms(atoms)
-        distances, energies, unit_forces = [], [], []
+        distances, energies, unit_forces, potentials = [], [], [], []
         with torch.enable_grad(), torch_tools.default_dtype(self.default_dtype):
             for index, model in enumerate(self.models):
                 batch = self._prepare_reference(atoms)
@@ -147,16 +171,19 @@ class BiasedMACECalculator(MACECalculator):
                             self._descriptors[index].segments_from_moments(moments), -1)
                         squared = self._metrics[index](descriptor)
                 if gradients:
-                    unit = squared.sum() + 0.0 * batch["positions"].sum()
+                    unit = target_potential(squared).sum() + 0.0 * batch["positions"].sum()
                     derivative, = torch.autograd.grad(unit, batch["positions"])
                     unit_forces.append(-derivative.detach().cpu().numpy())
                 distances.append(float(squared.detach().sum()))
+                potentials.append(float(target_potential(squared.detach()).sum()))
                 energies.append(float(out["energy"].detach().sum()) * self.energy_units_to_eV)
                 del out, features, batch, moments, squared
         squared = float(np.mean(distances))
         if not math.isfinite(squared) or squared < 0:
             raise FloatingPointError("Invalid descriptor distance")
-        return squared, float(np.mean(energies)), (np.mean(unit_forces, axis=0) if gradients else None)
+        return (squared, float(np.mean(energies)),
+                np.mean(unit_forces, axis=0) if gradients else None,
+                float(np.mean(potentials)))
 
     def _distance_squared(self, atoms):
         return self._probe_target(atoms)[0]
@@ -167,7 +194,7 @@ class BiasedMACECalculator(MACECalculator):
             raise RuntimeError("Call adapt_bias before evaluating an adaptive bias")
         if self.current_bias_weight == 0:
             return 0.0
-        return self.current_bias_weight * self._distance_squared(atoms)
+        return self.current_bias_weight * self._probe_target(atoms)[3]
 
     def get_bias_diagnostics(self, atoms, *, forces=False):
         """Report progress and, optionally, the exact bias-only force at a boundary.
@@ -177,9 +204,9 @@ class BiasedMACECalculator(MACECalculator):
         """
         if not self._adaptive_ready:
             raise RuntimeError("Call adapt_bias before bias diagnostics")
-        squared, energy, unit_force = self._probe_target(atoms, gradients=forces)
+        squared, energy, unit_force, potential = self._probe_target(atoms, gradients=forces)
         result = dict(distance=math.sqrt(squared), distance_squared=squared,
-                      physical_energy=energy, bias_energy=self.current_bias_weight*squared,
+                      physical_energy=energy, bias_energy=self.current_bias_weight*potential,
                       weight=self.current_bias_weight)
         if forces:
             force = self.current_bias_weight * unit_force
@@ -192,15 +219,17 @@ class BiasedMACECalculator(MACECalculator):
     def adapt_bias(self, atoms, *, energy_scale):
         """Configure one fixed adaptive bias from an external energy scale.
 
-        In adaptive mode ``bias_weight`` is ``gamma = V(d=1)/K``.  At the
-        supplied geometry, with squared target distance ``d0^2``,
+        In adaptive mode ``bias_weight`` requests ``gamma = V(d=1)/K``. At the
+        supplied geometry, with unit restraint ``v0``,
 
-            K = E / (1 + gamma d0^2),
+            K = E / (1 + gamma v0),
             w = gamma K.
 
         The method returns ``K``.  It does not modify positions, velocities, or
         any sampling state, and it has no dependency on a particular driver.
-        Fixed mode simply returns ``energy_scale`` and keeps ``w=bias_weight``.
+        If necessary, reduce w to satisfy the initial atomic force limit and
+        return K=E-w*v0. Subsequent evaluations CHECK the limit without changing
+        w. Fixed mode returns ``energy_scale`` and keeps ``w=bias_weight``.
         """
         self._validate_structure(atoms)
         energy_scale = float(energy_scale)
@@ -211,10 +240,14 @@ class BiasedMACECalculator(MACECalculator):
 
         self._adaptive_ready = False
         self.reset()
-        distance_squared = self._distance_squared(atoms)
+        check_force = self._adaptive and self.bias_weight > 0 and self.max_bias_force is not None
+        distance_squared, _, unit_force, potential = self._probe_target(
+            atoms, gradients=check_force)
         if self._adaptive:
+            unit_force_max = float(np.linalg.norm(unit_force, axis=1).max()) if check_force else 0.0
             weight, motion_energy = partition_bias_energy(
-                energy_scale, distance_squared, self.bias_weight
+                energy_scale, potential, self.bias_weight,
+                unit_force_max=unit_force_max, force_limit=self.max_bias_force,
             )
         else:
             weight, motion_energy = self.bias_weight, energy_scale
@@ -447,7 +480,8 @@ class BiasedMACECalculator(MACECalculator):
                 distance_squared = self._moment_metrics[index](moments)
             unit = target_potential(distance_squared)
             physical_energy = out["energy"]
-            total, forces, stress, virials = biased_autograd(
+            checked = self.max_bias_force is not None
+            result = biased_autograd(
                 physical_energy,
                 unit,
                 self.current_bias_weight / self.energy_units_to_eV,
@@ -455,7 +489,10 @@ class BiasedMACECalculator(MACECalculator):
                 out.get("displacement") if stress_requested else None,
                 cell,
                 batch_dict.get("pbc"),
+                return_bias_forces=checked,
             )
+            total, forces, stress, virials = result[:4]
+            bias_forces = result[4] if checked else None
         out = dict(out, energy=total, forces=forces, stress=stress, virials=virials)
         self._bias_records.append(
             {
@@ -469,6 +506,8 @@ class BiasedMACECalculator(MACECalculator):
                 "global_descriptor": (
                     descriptor.detach() if self.store_descriptor else None
                 ),
+                "bias_forces": (bias_forces.detach() * self.energy_units_to_eV
+                                if checked else None),
             }
         )
         return out
@@ -506,9 +545,15 @@ class BiasedMACECalculator(MACECalculator):
         )
         self.results["bias_energy"] = (
             self.current_bias_weight * self.results["unit_bias_energy"]
+            if self.current_bias_weight != 0 else 0.0
         )
         self.results["bias_weight"] = self.current_bias_weight
         self.results["target_energy"] = self.target_energy
+        if self.max_bias_force is not None:
+            bias_forces = torch.stack([r["bias_forces"] for r in self._bias_records]).mean(0)
+            self.results["bias_forces"] = bias_forces.cpu().numpy()
+            self.results["bias_force_max"] = float(
+                np.linalg.norm(self.results["bias_forces"], axis=1).max(initial=0.0))
         # Latent coordinates from independently trained models have no shared
         # basis: keep each descriptor separate; average energies, never features.
         if self.store_descriptor:
@@ -518,10 +563,20 @@ class BiasedMACECalculator(MACECalculator):
         self.results.pop("energies", None)
         if "node_energy" in self.results:
             self.results["unbiased_node_energy"] = self.results.pop("node_energy")
-        for key in ("energy", "forces", "unit_bias_energy"):
+        checked_keys = ["energy", "forces"]
+        if self.current_bias_weight != 0:
+            checked_keys.append("unit_bias_energy")
+        if self.max_bias_force is not None:
+            checked_keys.append("bias_forces")
+        for key in checked_keys:
             if not np.isfinite(self.results[key]).all():
                 self.results.clear()
                 raise FloatingPointError(f"Nonfinite biased result: {key}")
+        if (self.max_bias_force is not None and
+                self.results["bias_force_max"] > self.max_bias_force * (1.0 + 1e-10)):
+            force = self.results["bias_force_max"]
+            self.results.clear()
+            raise BiasForceError(force, self.max_bias_force)
 
     def get_global_descriptor(self, atoms):
         """Return invariant descriptors; this is an ordinary cached evaluation."""
@@ -546,18 +601,19 @@ class BiasedMACECalculator(MACECalculator):
             "adaptive_ready": self._adaptive_ready,
             "normalized_reference": self._normalized_reference,
             "protocol": self.adaptive_bias_protocol,
+            "max_bias_force": self.max_bias_force,
             "metrics": [deepcopy(metric.state_dict()) for metric in self._metrics],
         }
 
     def load_bias_state_dict(self, state):
-        legacy = state.get("protocol") == "energy_partition_ratio_v1"
-        if not legacy and state.get("protocol") != self.adaptive_bias_protocol:
-            raise ValueError("Incompatible adaptive-bias state")
+        if state.get("protocol") != self.adaptive_bias_protocol:
+            raise ValueError("Incompatible bias potential. Start a new v3 bias protocol; "
+                             "a quadratic-bias state is not a linear-tail restart.")
+        if state.get("max_bias_force") != self.max_bias_force:
+            raise ValueError("max_bias_force differs from saved state")
         if state.get("use_adaptive_bias") != self.use_adaptive_bias:
             raise ValueError("Adaptive-bias mode differs from saved state")
         saved_strength = float(state.get("bias_weight"))
-        if legacy and not self.use_adaptive_bias:
-            saved_strength *= 0.5
         if saved_strength != self.bias_weight:
             raise ValueError("bias_weight differs from saved state")
         if len(state["metrics"]) != len(self._metrics):
@@ -571,12 +627,9 @@ class BiasedMACECalculator(MACECalculator):
         for metric in self._moment_metrics:
             metric.refresh_scales()
         weight = float(state["current_bias_weight"])
-        if legacy:
-            weight *= 0.5  # Preserve V when loading the former V=w*d^2/2 convention.
         if not math.isfinite(weight) or weight < 0.0:
             raise ValueError("Invalid saved bias coefficient")
         self._bias_weight = weight
         self._adaptive_ready = bool(state["adaptive_ready"])
         self._normalized_reference = bool(state["normalized_reference"])
         self.reset()
-
