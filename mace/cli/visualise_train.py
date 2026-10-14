@@ -485,40 +485,36 @@ def model_inference(
     distributed: bool = False,
 ):
 
-    for param in model.parameters():
-        param.requires_grad = False
-
+    original_grad_state = [(param, param.requires_grad) for param in model.parameters()]
     results_dict = {}
+    try:
+        for param, _ in original_grad_state:
+            param.requires_grad_(False)
 
-    for name in all_data_loaders:
-        data_loader = all_data_loaders[name]
-        logging.debug(f"Running inference on {name} dataset")
-        scatter_metric = InferenceMetric().to(device)
+        for name, data_loader in all_data_loaders.items():
+            logging.debug(f"Running inference on {name} dataset")
+            scatter_metric = InferenceMetric().to(device)
 
-        for batch in data_loader:
-            batch = batch.to(device)
-            batch_dict = batch.to_dict()
-            output = model(
-                batch_dict,
-                training=False,
-                compute_force=output_args.get("forces", False),
-                compute_virials=output_args.get("virials", False),
-                compute_stress=output_args.get("stress", False),
-            )
+            for batch in data_loader:
+                batch = batch.to(device)
+                output = model(
+                    batch.to_dict(),
+                    training=False,
+                    compute_force=output_args.get("forces", False),
+                    compute_virials=output_args.get("virials", False),
+                    compute_stress=output_args.get("stress", False),
+                )
+                scatter_metric(batch, output)
 
-            results = scatter_metric(batch, output)
+            if distributed:
+                torch.distributed.barrier()
 
-        if distributed:
-            torch.distributed.barrier()
-
-        results = scatter_metric.compute()
-        results_dict[name] = results
-        scatter_metric.reset()
-
-        del data_loader
-
-    for param in model.parameters():
-        param.requires_grad = True
+            results_dict[name] = scatter_metric.compute()
+            scatter_metric.reset()
+    finally:
+        # Plotting failures must not freeze training or unfreeze intentional freezes.
+        for param, requires_grad in original_grad_state:
+            param.requires_grad_(requires_grad)
 
     return results_dict
 
@@ -732,10 +728,12 @@ class InferenceMetric(Metric):
             self.pred_dipole_per_atom.append(output["dipole"] / atoms_per_config_3d)
 
             self.n_dipole += filter_nonzero_weight(
-                batch, self.ref_dipole, batch.weight, batch.dipole_weight, "config"
+                batch, self.ref_dipole, batch.weight, batch.dipole_weight,
+                spread_quantity_vector=False,
             )
             filter_nonzero_weight(
-                batch, self.pred_dipole, batch.weight, batch.dipole_weight, "config"
+                batch, self.pred_dipole, batch.weight, batch.dipole_weight,
+                spread_quantity_vector=False,
             )
             filter_nonzero_weight(
                 batch,

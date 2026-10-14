@@ -222,6 +222,11 @@ def run(args) -> None:
             logging.info(
                 f"Using foundation model {args.foundation_model} as initial checkpoint."
             )
+        # Replay labels and E0 estimation run before configure_model casts weights.
+        # Local checkpoints can be float32 while the training data are float64.
+        model_foundation = model_foundation.to(
+            device=device, dtype=torch.get_default_dtype()
+        )
         args.r_max = model_foundation.r_max.item()
         inherited_magnetic_args = inherit_magnetic_hyperparameters_from_foundation(
             args, model_foundation
@@ -668,7 +673,11 @@ def run(args) -> None:
             ):
                 logging.info("Successfully applied pseudolabels to pt_head configurations")
             else:
-                logging.warning("Pseudolabeling was not successful, continuing with original configurations")
+                raise RuntimeError(
+                    "Pseudolabeling was not successful. Training stopped without "
+                    "substituting the replay file's labels. See the original "
+                    "exception above."
+                )
 
         ase_files = [f for f in head_config.train_file if check_path_ase_read(f)]
         non_ase_files = [f for f in head_config.train_file if not check_path_ase_read(f)]

@@ -507,7 +507,7 @@ def apply_pseudolabels_to_pt_head_configs(
         return True
 
     except Exception as e:  # pylint: disable=broad-except
-        logging.error(f"Error applying pseudolabels: {str(e)}")
+        logging.exception("Error applying pseudolabels: %s", e)
         return False
 
 

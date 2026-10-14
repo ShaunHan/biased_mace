@@ -223,30 +223,10 @@ def test_pseudolabel_replay_relabels_the_replay_set_from_the_foundation_model(
 
 
 @pytest.mark.timeout(900)
-def test_a_failing_pseudolabel_batch_keeps_the_file_labels_and_says_nothing(
+def test_a_failing_pseudolabel_batch_stops_training(
     tmp_path, split, anchor_scaleshift
 ):
-    """A batch that cannot be relabelled stops the stage instead of mixing.
-
-    Pseudolabel generation used to catch every exception per batch and keep
-    that batch's *original file* labels, so a replay set could end up holding
-    foundation-model labels for most configurations and foreign ones for the
-    rest, with only a log line to say which -- and the stage then reported
-    success. It refuses now, naming the batch and the configurations in it,
-    and the caller reports that it did not succeed.
-
-    "continuing with original configurations" is the load-bearing part. It was
-    false before: train was replaced as soon as it relabelled, so a failure on
-    valid left the two splits on different label sources while that line
-    claimed nothing had changed. Both splits are committed together now, so
-    the message is accurate.
-
-    Exhibiting it still needs a configuration the generation step chokes on,
-    and the one reachable from the command line -- an empty configuration,
-    which trips the aperiodic extent calculation -- also stops the run later in
-    the ordinary loader. So this asserts what the pseudolabel stage says, not
-    the exit code, which belongs to that unrelated second failure.
-    """
+    """Failed pseudolabel generation cannot silently select another label source."""
     finetune, replay = split
     contaminated = tmp_path / "replay_with_empty.xyz"
     configs = ase.io.read(replay, index=":")
@@ -276,6 +256,9 @@ def test_a_failing_pseudolabel_batch_keeps_the_file_labels_and_says_nothing(
         "find another way to make one batch fail before deleting it\n"
         + printed[-4000:]
     )
+    assert completed.returncode != 0
+    assert "Training stopped without substituting" in printed
+    assert "continuing with original configurations" not in printed
     assert "Pseudolabeling was not successful" in printed, (
         "a batch failed and the stage still declared success, which is the "
         "silent label mixing this refusal exists to prevent:\n"
@@ -285,6 +268,38 @@ def test_a_failing_pseudolabel_batch_keeps_the_file_labels_and_says_nothing(
         "the stage reported success for a run in which a batch failed:\n"
         + printed[-4000:]
     )
+
+
+@pytest.mark.timeout(900)
+def test_float32_foundation_relabels_unlabelled_train_and_valid_in_float64(
+    tmp_path, split, anchor_scaleshift
+):
+    """The local-checkpoint path must cast before either replay split is labelled."""
+    import torch
+
+    finetune, replay = split
+    model = torch.load(anchor_scaleshift, map_location="cpu", weights_only=False)
+    checkpoint = tmp_path / "foundation_float32.model"
+    torch.save(model.float(), checkpoint)
+    images = ase.io.read(replay, index=":")
+    for atoms in images:
+        atoms.calc = None
+        for key in ("REF_energy", "REF_stress", "REF_virials"):
+            atoms.info.pop(key, None)
+        atoms.arrays.pop("REF_forces", None)
+    train_path, valid_path = tmp_path / "pt_train.xyz", tmp_path / "pt_valid.xyz"
+    ase.io.write(train_path, images[1:], write_results=False)
+    ase.io.write(valid_path, images[:1], write_results=False)
+    run_mace_train(
+        finetuning_params(
+            tmp_path, finetune, train_path, name="float32_replay",
+            foundation_model=str(checkpoint), pt_valid_file=str(valid_path),
+            pseudolabel_replay=True, max_num_epochs=0,
+        )
+    )
+    initial = eval_records(tmp_path, "float32_replay", 11, "pt_head")[0]
+    assert initial["rmse_e_per_atom"] < 1e-8
+    assert initial["rmse_f"] < 1e-8
 
 
 @pytest.mark.timeout(900)
