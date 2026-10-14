@@ -6,7 +6,7 @@ python -m mace.cli.run_train \
     --name="fit_0" \
     --train_file="/fs/cephfs/data/qm_inorganics/shuang/bmhgps/C20H20/ml_training/data/C20H20_0_2304_vasp_sp.xyz" \
     --valid_fraction=0.2 \
-    --E0s="{1: -1.11721705, 6: -1.28160748}" \
+    --E0s="estimated" \
     --energy_key="dft_free_energy" \
     --forces_key="dft_forces" \
     --energy_weight=1.0 \
