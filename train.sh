@@ -1,0 +1,43 @@
+export OMP_NUM_THREADS=24
+export CUDA_VISIBLE_DEVICES=0
+export REQUESTS_CA_BUNDLE=/fs/cephfs/data/qm_inorganics/venvs/cacert.pem
+
+python -m mace.cli.run_train \
+    --name="fit_0" \
+    --train_file="/fs/cephfs/data/qm_inorganics/shuang/bmhgps/C20H20/ml_training/data/C20H20_0_2304_vasp_sp.xyz" \
+    --valid_fraction=0.2 \
+    --E0s="{1: -1.11721705, 6: -1.28160748}" \
+    --energy_key="dft_free_energy" \
+    --forces_key="dft_forces" \
+    --energy_weight=1.0 \
+    --forces_weight=100.0 \
+    --swa_energy_weight=1000.0 \
+    --swa_forces_weight=100.0 \
+    --model="PolarMACE" \
+    --foundation_model="/fs/cephfs/data/qm_inorganics/mace_models/MACE-POLAR-1-M.model" \
+    --pt_train_file="/fs/cephfs/data/qm_inorganics/shuang/bmhgps/C20H20/ml_training/data/replay/pt_train.xyz" \
+    --pt_valid_file="/fs/cephfs/data/qm_inorganics/shuang/bmhgps/C20H20/ml_training/data/replay/pt_valid.xyz" \
+    --multiheads_finetuning=True \
+    --pseudolabel_replay=True \
+    --force_mh_ft_lr=True \
+    --lr=0.0001 \
+    --swa_lr=0.0001 \
+    --eval_interval=2 \
+    --batch_size=8 \
+    --valid_batch_size=8 \
+    --max_num_epochs=500 \
+    --swa \
+    --start_swa=250 \
+    --ema \
+    --ema_decay=0.99 \
+    --weight_decay=1e-9 \
+    --amsgrad \
+    --device=cuda \
+    --default_dtype="float64" \
+    --restart_latest \
+    --save_cpu \
+    --save_all_checkpoints \
+    --keep_checkpoints \
+    --plot_frequency=10 \
+    --enable_cueq=True \
+    --seed=1234 >> train.out 2>&1
